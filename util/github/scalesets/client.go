@@ -15,10 +15,14 @@
 package scalesets
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/google/go-github/v84/github"
 
@@ -28,16 +32,56 @@ import (
 	"github.com/cloudbase/garm/runner/common"
 )
 
+// Scale-set mutations and ordinary reads must not wait forever. The message
+// broker can legitimately hold a long poll open, so it has a separate bound.
+const requestTimeout = 60 * time.Second
+const longPollRequestTimeout = 100 * time.Second
+
+// scaleSetTransport is unauthenticated: each scale-set request supplies its own
+// Authorization. Generic GitHub clients retain their existing transport.
+func scaleSetTransport(creds params.ForgeCredentials) (*http.Transport, error) {
+	var roots *x509.CertPool
+	if creds.CABundle != nil {
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(creds.CABundle) {
+			return nil, fmt.Errorf("failed to parse CA cert")
+		}
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		Proxy:       http.ProxyFromEnvironment,
+		DialContext: dialer.DialContext,
+		TLSClientConfig: &tls.Config{
+			RootCAs:    roots,
+			MinVersion: tls.VersionTLS12,
+		},
+		ForceAttemptHTTP2: true,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 30 * time.Second,
+			PingTimeout:     15 * time.Second,
+		},
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}, nil
+}
+
 func NewClient(cli common.GithubClient) (*ScaleSetClient, error) {
+	transport, err := scaleSetTransport(cli.GetEntity().Credentials)
+	if err != nil {
+		return nil, fmt.Errorf("building scale-set transport: %w", err)
+	}
 	return &ScaleSetClient{
-		ghCli:      cli,
-		httpClient: &http.Client{},
+		ghCli:          cli,
+		httpClient:     &http.Client{Timeout: requestTimeout, Transport: transport},
+		longPollClient: &http.Client{Timeout: longPollRequestTimeout, Transport: transport},
 	}, nil
 }
 
 type ScaleSetClient struct {
-	ghCli      common.GithubClient
-	httpClient *http.Client
+	ghCli          common.GithubClient
+	httpClient     *http.Client
+	longPollClient *http.Client
 
 	// scale sets are aparently available through the same security
 	// contex that a normal runner would use. We connect to the same
@@ -82,11 +126,19 @@ func (s *ScaleSetClient) GetGithubClient() (common.GithubClient, error) {
 }
 
 func (s *ScaleSetClient) Do(req *http.Request) (*http.Response, error) {
-	if s.httpClient == nil {
+	return s.doWithClient(s.httpClient, req)
+}
+
+func (s *ScaleSetClient) DoLongPoll(req *http.Request) (*http.Response, error) {
+	return s.doWithClient(s.longPollClient, req)
+}
+
+func (s *ScaleSetClient) doWithClient(client *http.Client, req *http.Request) (*http.Response, error) {
+	if client == nil {
 		return nil, fmt.Errorf("http client is not initialized")
 	}
 
-	resp, err := s.httpClient.Do(req) //nolint:gosec // G704 - URL is constructed from GitHub API endpoints
+	resp, err := client.Do(req) //nolint:gosec // G704 - URL is constructed from GitHub API endpoints
 	if err != nil {
 		return nil, fmt.Errorf("failed to dispatch HTTP request: %w", err)
 	}

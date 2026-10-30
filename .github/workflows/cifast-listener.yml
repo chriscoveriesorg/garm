@@ -1,0 +1,66 @@
+name: CIFAST listener backport
+
+on:
+  pull_request:
+    branches:
+      - cifast/v0.2.1
+
+permissions:
+  contents: read
+
+jobs:
+  listener:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.2'
+          check-latest: false
+          cache: false
+      - name: Verify source and Go version
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(go env GOVERSION)" = go1.26.2
+          go version
+      - name: Test listener failure controls
+        run: go test -mod=vendor -count=1 ./util/github/scalesets
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.11.1'
+          cache: false
+      - name: Build embedded web UI
+        run: |
+          set -eu
+          cd webapp
+          npm ci
+          npm run build
+          test -f build/index.html
+          cp -a build/. assets/
+      - name: Build exact-head binary
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y libbtrfs-dev
+          mkdir -p artifact
+          go build -mod=vendor -trimpath -buildvcs=false -ldflags "-s -w -X github.com/cloudbase/garm/util/appdefaults.Version=$EXPECTED_HEAD" -tags osusergo,netgo,sqlite_omit_load_extension -o artifact/garm ./cmd/garm
+          test -f webapp/assets/index.html
+          go version -m artifact/garm > artifact/go-version-m.txt
+          printf '%s\n' "$EXPECTED_HEAD" > artifact/source-head.txt
+          printf '%s\n' "$GITHUB_RUN_ID" > artifact/run-id.txt
+          (cd artifact && sha256sum garm > SHA256SUMS)
+          cat artifact/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-listener-${{ github.event.pull_request.head.sha }}
+          path: artifact/
+          if-no-files-found: error
