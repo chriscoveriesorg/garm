@@ -16,8 +16,12 @@ uses the configured CA bundle, proxy, TLS minimum, and dial settings; a
 malformed configured CA bundle refuses construction.
 
 The change adds no application retry for a timed-out mutation. A timeout does
-not prove whether the server completed the operation. Existing session and
-message behavior remains subject to that ambiguity.
+not prove whether the server completed the operation. Existing listener logic
+leaves an `AcquireJobs` message unprocessed when the request errors, so a
+requeued message can trigger another acquisition attempt even if the server
+completed the earlier one. The existing session loop can also retry a failed
+token refresh on a later tick. These inherited paths do not establish the
+remote state or make replay safe.
 
 The hosted CI job checks the pinned Go version, runs source-bound failure
 controls, builds the embedded UI from the committed lockfile, and uploads the

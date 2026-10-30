@@ -133,3 +133,40 @@ func TestGetMessageUsesLongPollClientOnInjectedFailure(t *testing.T) {
 		t.Fatalf("failure %v, long-poll calls %d, ordinary calls %d", err, poll.calls, ordinary.calls)
 	}
 }
+
+// A background context has no caller deadline. Shortening only the test
+// clients exercises cancellation by http.Client.Timeout itself.
+func TestClientTimeoutCancelsInjectedBlockedRequests(t *testing.T) {
+	readme, err := os.ReadFile("../../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceURL := regexp.MustCompile(`https://github[.]com/cloudbase/garm/[^)[:space:]]+`).Find(readme)
+	if len(sourceURL) == 0 {
+		t.Fatal("retained source URL missing")
+	}
+	client, err := NewClient(clientForTransportTest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dispatch := range []struct {
+		method string
+		call   func(*http.Request) (*http.Response, error)
+		target *http.Client
+	}{
+		{http.MethodPost, client.Do, client.httpClient},
+		{http.MethodGet, client.DoLongPoll, client.longPollClient},
+	} {
+		transport := &failingTransport{}
+		dispatch.target.Transport = transport
+		dispatch.target.Timeout = 20 * time.Millisecond
+		req, err := http.NewRequestWithContext(context.Background(), dispatch.method, string(sourceURL), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = dispatch.call(req)
+		if !errors.Is(err, context.DeadlineExceeded) || transport.calls != 1 {
+			t.Fatalf("failure %v, dispatch count %d", err, transport.calls)
+		}
+	}
+}
