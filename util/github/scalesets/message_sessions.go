@@ -198,7 +198,7 @@ func (m *MessageSession) GetMessage(ctx context.Context, lastMessageID int64, ma
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.session.MessageQueueAccessToken))
 	req.Header.Set(maxCapacityHeader, fmt.Sprintf("%d", maxCapacity))
 
-	resp, err := m.ssCli.Do(req)
+	resp, err := m.ssCli.DoLongPoll(req)
 	if err != nil {
 		return params.RunnerScaleSetMessage{}, fmt.Errorf("request to %s failed: %w", req.URL.String(), err)
 	}

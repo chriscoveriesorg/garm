@@ -1,0 +1,250 @@
+name: CIFAST listener backport
+
+on:
+  pull_request:
+    branches:
+      - cifast/v0.2.1
+
+permissions:
+  contents: read
+
+jobs:
+  listener:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.2'
+          check-latest: false
+          cache: false
+      - name: Verify source and Go version
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(go env GOVERSION)" = go1.26.2
+          go version
+      - name: Test listener failure controls
+        run: go test -mod=vendor -count=1 ./util/github/scalesets
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.11.1'
+      - name: Build embedded web UI
+        run: |
+          set -eu
+          cd webapp
+          npm ci
+          npm run build
+          test -f build/index.html
+          cp -a build/. assets/
+      - name: Build exact-head binary
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y libbtrfs-dev
+          mkdir -p artifact
+          go build -mod=vendor -trimpath -buildvcs=false -ldflags "-s -w -X github.com/cloudbase/garm/util/appdefaults.Version=$EXPECTED_HEAD" -tags osusergo,netgo,sqlite_omit_load_extension -o artifact/garm ./cmd/garm
+          test -f webapp/assets/index.html
+          go version -m artifact/garm > artifact/go-version-m.txt
+          printf '%s\n' "$EXPECTED_HEAD" > artifact/source-head.txt
+          printf '%s\n' "$GITHUB_RUN_ID" > artifact/run-id.txt
+          (cd artifact && sha256sum garm > SHA256SUMS)
+          cat artifact/SHA256SUMS
+      - name: Prepare bounded binary parts
+        run: |
+          set -eu
+          size=$(stat -c %s artifact/garm)
+          test "$size" -gt 0
+          test "$size" -le 80000000
+          printf 'garm_binary_size_bytes=%s\n' "$size"
+          printf 'garm_binary_sha256='
+          cut -d ' ' -f 1 artifact/SHA256SUMS
+          mkdir parts
+          split -b 4000000 -d -a 2 artifact/garm parts/garm.part-
+          (cd artifact && sha256sum garm) > parts/SHA256SUMS
+          (cd parts && sha256sum garm.part-*) >> parts/SHA256SUMS
+          printf '%s\n' "$size" > parts/binary-size.txt
+          printf '%s\n' "$EXPECTED_HEAD" > parts/source-head.txt
+          printf '%s\n' "$GITHUB_RUN_ID" > parts/run-id.txt
+          printf '%s\n' "$GITHUB_RUN_ATTEMPT" > parts/run-attempt.txt
+          cp artifact/go-version-m.txt parts/go-version-m.txt
+      - name: Upload binary manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-manifest-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            parts/SHA256SUMS
+            parts/binary-size.txt
+            parts/source-head.txt
+            parts/run-id.txt
+            parts/run-attempt.txt
+            parts/go-version-m.txt
+          if-no-files-found: error
+      - name: Upload binary part 00
+        if: ${{ hashFiles('parts/garm.part-00') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-00
+          path: parts/garm.part-00
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 01
+        if: ${{ hashFiles('parts/garm.part-01') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-01
+          path: parts/garm.part-01
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 02
+        if: ${{ hashFiles('parts/garm.part-02') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-02
+          path: parts/garm.part-02
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 03
+        if: ${{ hashFiles('parts/garm.part-03') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-03
+          path: parts/garm.part-03
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 04
+        if: ${{ hashFiles('parts/garm.part-04') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-04
+          path: parts/garm.part-04
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 05
+        if: ${{ hashFiles('parts/garm.part-05') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-05
+          path: parts/garm.part-05
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 06
+        if: ${{ hashFiles('parts/garm.part-06') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-06
+          path: parts/garm.part-06
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 07
+        if: ${{ hashFiles('parts/garm.part-07') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-07
+          path: parts/garm.part-07
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 08
+        if: ${{ hashFiles('parts/garm.part-08') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-08
+          path: parts/garm.part-08
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 09
+        if: ${{ hashFiles('parts/garm.part-09') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-09
+          path: parts/garm.part-09
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 10
+        if: ${{ hashFiles('parts/garm.part-10') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-10
+          path: parts/garm.part-10
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 11
+        if: ${{ hashFiles('parts/garm.part-11') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-11
+          path: parts/garm.part-11
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 12
+        if: ${{ hashFiles('parts/garm.part-12') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-12
+          path: parts/garm.part-12
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 13
+        if: ${{ hashFiles('parts/garm.part-13') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-13
+          path: parts/garm.part-13
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 14
+        if: ${{ hashFiles('parts/garm.part-14') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-14
+          path: parts/garm.part-14
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 15
+        if: ${{ hashFiles('parts/garm.part-15') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-15
+          path: parts/garm.part-15
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 16
+        if: ${{ hashFiles('parts/garm.part-16') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-16
+          path: parts/garm.part-16
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 17
+        if: ${{ hashFiles('parts/garm.part-17') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-17
+          path: parts/garm.part-17
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 18
+        if: ${{ hashFiles('parts/garm.part-18') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-18
+          path: parts/garm.part-18
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload binary part 19
+        if: ${{ hashFiles('parts/garm.part-19') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-19
+          path: parts/garm.part-19
+          if-no-files-found: error
+          compression-level: 0
