@@ -255,6 +255,14 @@ func (c *Controller) retryFailedScaleSets() {
 			return true
 		}
 
+		if !set.scaleSet.Enabled {
+			// A disabled scale set's listener calls always fail (the forge
+			// answers them 404), so a retry can never succeed; it only churns
+			// the API budget and the logs. The entry stays inert until an
+			// update event enables the set again.
+			return true
+		}
+
 		if !c.backoff.ShouldRetry(backoffKey) {
 			return true
 		}
