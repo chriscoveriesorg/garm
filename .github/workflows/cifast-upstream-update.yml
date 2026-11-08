@@ -77,14 +77,17 @@ jobs:
           echo "kept=$(printf '%s ' "${KEPT[@]:-}")" >> "$GITHUB_OUTPUT"
           echo "dropped=$(printf '%s ' "${DROPPED[@]:-}")" >> "$GITHUB_OUTPUT"
       - name: Test and build
+        env:
+          UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
         run: |
           set -euo pipefail
-          go test -count=1 ./...
+          # upstream's own targets: go-test = go test -race -mod=vendor -tags
+          # testing ./...; build = vendored go build with version ldflags.
+          make go-test TEST_ARGS="-parallel=4"
+          VERSION="$UPSTREAM_SHA" make build
           mkdir -p out
-          go build -mod=vendor -trimpath -buildvcs=false \
-            -ldflags "-s -w -X github.com/cloudbase/garm/util/appdefaults.Version=${{ steps.rebase.outputs.upstream_sha }}" \
-            -tags osusergo,netgo,sqlite_omit_load_extension -o out/garm ./cmd/garm
-          (cd out && sha256sum garm | tee SHA256SUMS)
+          cp bin/garm bin/garm-cli out/
+          (cd out && sha256sum garm garm-cli | tee SHA256SUMS)
       - name: Manifest
         id: manifest
         env:
@@ -128,7 +131,7 @@ jobs:
             --title "upstream $SHA8 + cifast patches" \
             --notes "Rebase of cifast/patches onto cloudbase/garm $UPSTREAM_SHA. See manifest.json." \
             --repo ${{ github.repository }} \
-            out/garm out/SHA256SUMS out/manifest.json out/config-delta.txt
+            out/garm out/garm-cli out/SHA256SUMS out/manifest.json out/config-delta.txt
           BODY="$(cat out/manifest.json)"
           EXISTING="$(gh pr list --repo ${{ github.repository }} --head "$BRANCH" --json number --jq '.[0].number // empty' || true)"
           if [ -n "$EXISTING" ]; then
