@@ -152,8 +152,12 @@ jobs:
           if [ -n "$EXISTING" ]; then
             gh pr edit "$EXISTING" --repo ${{ github.repository }} \
               --body-file /tmp/pr-body.txt
-          else
-            gh pr create --repo ${{ github.repository }} --base main --head "$BRANCH" \
+          elif ! gh pr create --repo ${{ github.repository }} --base main --head "$BRANCH" \
               --title "Update to upstream $SHA8 + cifast patches" \
-              --body-file /tmp/pr-body.txt
+              --body-file /tmp/pr-body.txt; then
+            # The org may bar Actions from opening PRs; the release still
+            # stands and the branch is pushed — a human opens it.
+            echo "gh pr create refused; open the update PR by hand:"
+            echo "https://github.com/${{ github.repository }}/compare/main...$BRANCH?expand=1"
+            exit 0
           fi
