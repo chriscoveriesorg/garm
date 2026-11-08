@@ -1,0 +1,141 @@
+name: CIFAST upstream update
+
+# Rebases our patch series (cifast/patches/) onto an upstream ref, runs the
+# full Go test suite, builds the garm binary, publishes it as a PRERELEASE
+# asset with a manifest, and opens/updates the update/SHA8 PR. A rebase
+# conflict is the ONLY failure mode that needs an agent.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: 'upstream ref to rebase onto (branch, tag or sha)'
+        required: true
+        default: 'main'
+  schedule:
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.2'
+          check-latest: false
+          cache: false
+      - name: Rebase the patch series onto the upstream ref
+        id: rebase
+        env:
+          REF: ${{ inputs.upstream_ref || 'main' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp -r cifast/patches "$RUNNER_TEMP/patches"
+          git remote add upstream https://github.com/cloudbase/garm.git
+          git fetch upstream --tags --quiet
+          UPSTREAM_SHA="$(git rev-parse "upstream/${REF}")"
+          SHA8="${UPSTREAM_SHA:0:8}"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "sha8=$SHA8" >> "$GITHUB_OUTPUT"
+          echo "branch=update/$SHA8" >> "$GITHUB_OUTPUT"
+          git config user.name "cifast-upstream-update"
+          git config user.email "cifast-upstream-update@cccc.local"
+          git checkout -B "update/$SHA8" "$UPSTREAM_SHA"
+          KEPT=() ; DROPPED=()
+          while read -r patch; do
+            [ -n "$patch" ] || continue
+            file="$RUNNER_TEMP/patches/$patch"
+            if git apply -R --check "$file" 2>/dev/null; then
+              echo "dropped (already upstream): $patch"
+              DROPPED+=("$patch")
+              continue
+            fi
+            if ! git apply --3way "$file"; then
+              git reset --hard HEAD || true
+              echo "::error::rebase conflict applying $patch — an agent must resolve it"
+              git status --short | grep -E '^(UU|AA|DU|UD)' || true
+              exit 1
+            fi
+            git -c user.name="cifast-upstream-update" \
+                -c user.email="cifast-upstream-update@cccc.local" \
+                commit -qm "cifast patch: $patch"
+            KEPT+=("$patch")
+          done < "$RUNNER_TEMP/patches/series"
+          echo "kept=$(printf '%s ' "${KEPT[@]:-}")" >> "$GITHUB_OUTPUT"
+          echo "dropped=$(printf '%s ' "${DROPPED[@]:-}")" >> "$GITHUB_OUTPUT"
+      - name: Test and build
+        run: |
+          set -euo pipefail
+          go test -count=1 ./...
+          mkdir -p out
+          go build -mod=vendor -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/cloudbase/garm/util/appdefaults.Version=${{ steps.rebase.outputs.upstream_sha }}" \
+            -tags osusergo,netgo,sqlite_omit_load_extension -o out/garm ./cmd/garm
+          (cd out && sha256sum garm | tee SHA256SUMS)
+      - name: Manifest
+        id: manifest
+        env:
+          UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
+          RUNNING_SHA: def04d0a901134d9f8ec76d959b1b6473c3ce4ef
+        run: |
+          set -euo pipefail
+          BIN_SHA="$(cut -d' ' -f1 out/SHA256SUMS)"
+          echo "bin_sha=$BIN_SHA" >> "$GITHUB_OUTPUT"
+          # DB migrations between the running build and the new one.
+          git diff --name-only "$RUNNING_SHA" "$UPSTREAM_SHA" -- database/migrations database/sql/migrations \
+            | jq -Rn '[inputs]' > /tmp/migrations.json || echo '[]' > /tmp/migrations.json
+          # config.toml surface: keys added or removed in the shipped sample/config structs.
+          git diff "$RUNNING_SHA" "$UPSTREAM_SHA" -- config/config.go testdata/config.toml contrib/config \
+            | grep -E '^[+-].*(=|" *[A-Za-z_]+ *:)' > /tmp/config-delta.txt || true
+          IFACE="$(grep -rn 'InterfaceVersion' runner/providers/external/*.go 2>/dev/null | head -3 || true)"
+          jq -n --arg upstream "$UPSTREAM_SHA" --arg running "$RUNNING_SHA" \
+                --arg kept "${{ steps.rebase.outputs.kept }}" --arg dropped "${{ steps.rebase.outputs.dropped }}" \
+                --arg binsha "$BIN_SHA" --arg iface "$IFACE" \
+                --slurpfile mig /tmp/migrations.json \
+            '{upstream_sha: $upstream, running_sha: $running,
+              patches: {kept: ($kept|split(" ")|map(select(.!=""))),
+                        dropped: ($dropped|split(" ")|map(select(.!="")))},
+              db_migration_files: $mig[0],
+              binary_sha256: $binsha,
+              external_provider_interface: $iface}' > out/manifest.json
+          cat /tmp/config-delta.txt > out/config-delta.txt || true
+          cat out/manifest.json
+      - name: Push branch, prerelease and PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.rebase.outputs.branch }}
+          SHA8: ${{ steps.rebase.outputs.sha8 }}
+          UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
+          BIN_SHA: ${{ steps.manifest.outputs.bin_sha }}
+        run: |
+          set -euo pipefail
+          git push origin "$BRANCH" --force-with-lease
+          TAG="upstream-$SHA8-$(date -u +%Y%m%d)"
+          gh release create "$TAG" --prerelease \
+            --title "upstream $SHA8 + cifast patches" \
+            --notes "Rebase of cifast/patches onto cloudbase/garm $UPSTREAM_SHA. See manifest.json." \
+            --repo ${{ github.repository }} \
+            out/garm out/SHA256SUMS out/manifest.json out/config-delta.txt
+          BODY="$(cat out/manifest.json)"
+          EXISTING="$(gh pr list --repo ${{ github.repository }} --head "$BRANCH" --json number --jq '.[0].number // empty' || true)"
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --repo ${{ github.repository }} \
+              --body "Upstream $UPSTREAM_SHA rebase (run $GITHUB_RUN_ID).\n\n$BODY"
+          else
+            gh pr create --repo ${{ github.repository }} --base main --head "$BRANCH" \
+              --title "Update to upstream $SHA8 + cifast patches" \
+              --body "Upstream $UPSTREAM_SHA rebase (run $GITHUB_RUN_ID).\n\n$BODY" || true
+          fi
