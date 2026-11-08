@@ -127,20 +127,27 @@ jobs:
           BIN_SHA: ${{ steps.manifest.outputs.bin_sha }}
         run: |
           set -euo pipefail
+          gh auth setup-git
           git push origin "$BRANCH" --force-with-lease
           TAG="upstream-$SHA8-$(date -u +%Y%m%d)"
-          gh release create "$TAG" --prerelease \
-            --title "upstream $SHA8 + cifast patches" \
-            --notes "Rebase of cifast/patches onto cloudbase/garm $UPSTREAM_SHA. See manifest.json." \
-            --repo ${{ github.repository }} \
-            out/garm out/garm-cli out/SHA256SUMS out/manifest.json out/config-delta.txt
-          BODY="$(cat out/manifest.json)"
+          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber --repo ${{ github.repository }} \
+              out/garm out/garm-cli out/SHA256SUMS out/manifest.json out/config-delta.txt
+          else
+            gh release create "$TAG" --prerelease \
+              --title "upstream $SHA8 + cifast patches" \
+              --notes "Rebase of cifast/patches onto cloudbase/garm $UPSTREAM_SHA. See manifest.json." \
+              --repo ${{ github.repository }} \
+              out/garm out/garm-cli out/SHA256SUMS out/manifest.json out/config-delta.txt
+          fi
+          printf 'Upstream %s rebase (run %s).\n\n' "$UPSTREAM_SHA" "$GITHUB_RUN_ID" > /tmp/pr-body.txt
+          cat out/manifest.json >> /tmp/pr-body.txt
           EXISTING="$(gh pr list --repo ${{ github.repository }} --head "$BRANCH" --json number --jq '.[0].number // empty' || true)"
           if [ -n "$EXISTING" ]; then
             gh pr edit "$EXISTING" --repo ${{ github.repository }} \
-              --body "Upstream $UPSTREAM_SHA rebase (run $GITHUB_RUN_ID).\n\n$BODY"
+              --body-file /tmp/pr-body.txt
           else
             gh pr create --repo ${{ github.repository }} --base main --head "$BRANCH" \
               --title "Update to upstream $SHA8 + cifast patches" \
-              --body "Upstream $UPSTREAM_SHA rebase (run $GITHUB_RUN_ID).\n\n$BODY" || true
+              --body-file /tmp/pr-body.txt
           fi
