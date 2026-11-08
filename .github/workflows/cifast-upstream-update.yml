@@ -95,8 +95,10 @@ jobs:
           RUNNING_SHA: def04d0a901134d9f8ec76d959b1b6473c3ce4ef
         run: |
           set -euo pipefail
-          BIN_SHA="$(cut -d' ' -f1 out/SHA256SUMS)"
+          BIN_SHA="$(grep ' garm$' out/SHA256SUMS | cut -d' ' -f1)"
+          CLI_SHA="$(grep ' garm-cli$' out/SHA256SUMS | cut -d' ' -f1)"
           echo "bin_sha=$BIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "cli_sha=$CLI_SHA" >> "$GITHUB_OUTPUT"
           # DB migrations between the running build and the new one.
           git diff --name-only "$RUNNING_SHA" "$UPSTREAM_SHA" -- database/migrations database/sql/migrations \
             | jq -Rn '[inputs]' > /tmp/migrations.json || echo '[]' > /tmp/migrations.json
@@ -106,13 +108,13 @@ jobs:
           IFACE="$(grep -rn 'InterfaceVersion' runner/providers/external/*.go 2>/dev/null | head -3 || true)"
           jq -n --arg upstream "$UPSTREAM_SHA" --arg running "$RUNNING_SHA" \
                 --arg kept "${{ steps.rebase.outputs.kept }}" --arg dropped "${{ steps.rebase.outputs.dropped }}" \
-                --arg binsha "$BIN_SHA" --arg iface "$IFACE" \
+                --arg binsha "$BIN_SHA" --arg clisha "$CLI_SHA" --arg iface "$IFACE" \
                 --slurpfile mig /tmp/migrations.json \
             '{upstream_sha: $upstream, running_sha: $running,
               patches: {kept: ($kept|split(" ")|map(select(.!=""))),
                         dropped: ($dropped|split(" ")|map(select(.!="")))},
               db_migration_files: $mig[0],
-              binary_sha256: $binsha,
+              binary_sha256: {garm: $binsha, "garm-cli": $clisha},
               external_provider_interface: $iface}' > out/manifest.json
           cat /tmp/config-delta.txt > out/config-delta.txt || true
           cat out/manifest.json

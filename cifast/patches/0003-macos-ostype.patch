@@ -1,0 +1,119 @@
+From 1df94339a00c1a937515635d76402ae2f9f35988 Mon Sep 17 00:00:00 2001
+From: cifast-devin-2 <cifast-devin-2@cccc.local>
+Date: Sun, 8 Nov 2026 08:59:43 +0000
+Subject: [PATCH] Add macOS OSType support for scale sets and pools
+
+Adds params.MacOS ("macOS") to garm-provider-common, maps macos/darwin/
+osx names and the GitHub tools download label "osx" in util, accepts it
+in runner supportedOSType and CreateTemplateParams validation. Lets a
+scale set be declared macos/arm64 instead of faking linux/arm64.
+---
+ params/requests.go                                |  2 +-
+ runner/types.go                                   |  1 +
+ runner/types_test.go                              | 15 +++++++++++++++
+ .../garm-provider-common/params/params.go         |  4 +++-
+ .../cloudbase/garm-provider-common/util/util.go   |  6 ++++++
+ 5 files changed, 26 insertions(+), 2 deletions(-)
+ create mode 100644 runner/types_test.go
+
+diff --git a/params/requests.go b/params/requests.go
+index 81794bda..a15cd0bc 100644
+--- a/params/requests.go
++++ b/params/requests.go
+@@ -995,7 +995,7 @@ func (c *CreateTemplateParams) Validate() error {
+ 	}
+ 
+ 	switch c.OSType {
+-	case commonParams.Linux, commonParams.Windows:
++	case commonParams.Linux, commonParams.Windows, commonParams.MacOS:
+ 	default:
+ 		return fmt.Errorf("invalid OS type: %q", c.OSType)
+ 	}
+diff --git a/runner/types.go b/runner/types.go
+index ee41188a..73644ef3 100644
+--- a/runner/types.go
++++ b/runner/types.go
+@@ -29,6 +29,7 @@ var (
+ 	supportedOSType map[params.OSType]struct{} = map[params.OSType]struct{}{
+ 		params.Linux:   {},
+ 		params.Windows: {},
++		params.MacOS:   {},
+ 	}
+ 
+ 	// These are the architectures that Github supports.
+diff --git a/runner/types_test.go b/runner/types_test.go
+new file mode 100644
+index 00000000..fd455ef0
+--- /dev/null
++++ b/runner/types_test.go
+@@ -0,0 +1,15 @@
++package runner
++
++import (
++	"testing"
++
++	"github.com/cloudbase/garm-provider-common/params"
++	"github.com/stretchr/testify/require"
++)
++
++func TestSupportedOSTypeIncludesMacOS(t *testing.T) {
++	require.True(t, IsSupportedOSType(params.Linux))
++	require.True(t, IsSupportedOSType(params.Windows))
++	require.True(t, IsSupportedOSType(params.MacOS))
++	require.False(t, IsSupportedOSType(params.Unknown))
++}
+diff --git a/vendor/github.com/cloudbase/garm-provider-common/params/params.go b/vendor/github.com/cloudbase/garm-provider-common/params/params.go
+index a4e55291..e9faaeda 100644
+--- a/vendor/github.com/cloudbase/garm-provider-common/params/params.go
++++ b/vendor/github.com/cloudbase/garm-provider-common/params/params.go
+@@ -30,6 +30,7 @@ type (
+ const (
+ 	Windows OSType = "windows"
+ 	Linux   OSType = "linux"
++	MacOS   OSType = "macOS"
+ 	Unknown OSType = "unknown"
+ )
+ 
+@@ -205,7 +206,8 @@ type ProviderInstance struct {
+ 	// instance.
+ 	Name string `json:"name,omitempty"`
+ 
+-	// OSType is the operating system type. For now, only Linux and
++	// OSType is the operating system type. For now, Linux, Windows
++	// and macOS are
+ 	// Windows are supported.
+ 	OSType OSType `json:"os_type,omitempty"`
+ 
+diff --git a/vendor/github.com/cloudbase/garm-provider-common/util/util.go b/vendor/github.com/cloudbase/garm-provider-common/util/util.go
+index 2dd879e3..8a9b65fa 100644
+--- a/vendor/github.com/cloudbase/garm-provider-common/util/util.go
++++ b/vendor/github.com/cloudbase/garm-provider-common/util/util.go
+@@ -68,6 +68,10 @@ var (
+ 		"rockylinux": params.Linux,
+ 		"rocky":      params.Linux,
+ 		"windows":    params.Windows,
++		"macos":      params.MacOS,
++		"darwin":     params.MacOS,
++		"osx":        params.MacOS,
++		"os x":       params.MacOS,
+ 	}
+ 
+ 	githubArchMapping map[string]string = map[string]string{
+@@ -83,12 +87,14 @@ var (
+ 	githubOSTypeMap map[string]string = map[string]string{
+ 		"linux":   "linux",
+ 		"windows": "win",
++		"macos":   "osx",
+ 	}
+ 
+ 	//
+ 	githubOSTag = map[params.OSType]string{
+ 		params.Linux:   "Linux",
+ 		params.Windows: "Windows",
++		params.MacOS:   "macOS",
+ 	}
+ )
+ 
+-- 
+2.43.0
+
