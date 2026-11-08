@@ -1,0 +1,595 @@
+diff --git a/.github/workflows/cifast-listener.yml b/.github/workflows/cifast-listener.yml
+new file mode 100644
+index 00000000..cfd6c87c
+--- /dev/null
++++ b/.github/workflows/cifast-listener.yml
+@@ -0,0 +1,250 @@
++name: CIFAST listener backport
++
++on:
++  pull_request:
++    branches:
++      - cifast/v0.2.1
++
++permissions:
++  contents: read
++
++jobs:
++  listener:
++    runs-on: ubuntu-24.04
++    timeout-minutes: 30
++    env:
++      GOTOOLCHAIN: local
++      CGO_ENABLED: '1'
++      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
++    steps:
++      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
++        with:
++          ref: ${{ github.event.pull_request.head.sha }}
++          persist-credentials: false
++      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
++        with:
++          go-version: '1.26.2'
++          check-latest: false
++          cache: false
++      - name: Verify source and Go version
++        run: |
++          set -eu
++          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
++          test "$(go env GOVERSION)" = go1.26.2
++          go version
++      - name: Test listener failure controls
++        run: go test -mod=vendor -count=1 ./util/github/scalesets
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
++        with:
++          node-version: '24.11.1'
++      - name: Build embedded web UI
++        run: |
++          set -eu
++          cd webapp
++          npm ci
++          npm run build
++          test -f build/index.html
++          cp -a build/. assets/
++      - name: Build exact-head binary
++        run: |
++          set -eu
++          sudo apt-get update
++          sudo apt-get install -y libbtrfs-dev
++          mkdir -p artifact
++          go build -mod=vendor -trimpath -buildvcs=false -ldflags "-s -w -X github.com/cloudbase/garm/util/appdefaults.Version=$EXPECTED_HEAD" -tags osusergo,netgo,sqlite_omit_load_extension -o artifact/garm ./cmd/garm
++          test -f webapp/assets/index.html
++          go version -m artifact/garm > artifact/go-version-m.txt
++          printf '%s\n' "$EXPECTED_HEAD" > artifact/source-head.txt
++          printf '%s\n' "$GITHUB_RUN_ID" > artifact/run-id.txt
++          (cd artifact && sha256sum garm > SHA256SUMS)
++          cat artifact/SHA256SUMS
++      - name: Prepare bounded binary parts
++        run: |
++          set -eu
++          size=$(stat -c %s artifact/garm)
++          test "$size" -gt 0
++          test "$size" -le 80000000
++          printf 'garm_binary_size_bytes=%s\n' "$size"
++          printf 'garm_binary_sha256='
++          cut -d ' ' -f 1 artifact/SHA256SUMS
++          mkdir parts
++          split -b 4000000 -d -a 2 artifact/garm parts/garm.part-
++          (cd artifact && sha256sum garm) > parts/SHA256SUMS
++          (cd parts && sha256sum garm.part-*) >> parts/SHA256SUMS
++          printf '%s\n' "$size" > parts/binary-size.txt
++          printf '%s\n' "$EXPECTED_HEAD" > parts/source-head.txt
++          printf '%s\n' "$GITHUB_RUN_ID" > parts/run-id.txt
++          printf '%s\n' "$GITHUB_RUN_ATTEMPT" > parts/run-attempt.txt
++          cp artifact/go-version-m.txt parts/go-version-m.txt
++      - name: Upload binary manifest
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-manifest-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
++          path: |
++            parts/SHA256SUMS
++            parts/binary-size.txt
++            parts/source-head.txt
++            parts/run-id.txt
++            parts/run-attempt.txt
++            parts/go-version-m.txt
++          if-no-files-found: error
++      - name: Upload binary part 00
++        if: ${{ hashFiles('parts/garm.part-00') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-00
++          path: parts/garm.part-00
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 01
++        if: ${{ hashFiles('parts/garm.part-01') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-01
++          path: parts/garm.part-01
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 02
++        if: ${{ hashFiles('parts/garm.part-02') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-02
++          path: parts/garm.part-02
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 03
++        if: ${{ hashFiles('parts/garm.part-03') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-03
++          path: parts/garm.part-03
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 04
++        if: ${{ hashFiles('parts/garm.part-04') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-04
++          path: parts/garm.part-04
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 05
++        if: ${{ hashFiles('parts/garm.part-05') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-05
++          path: parts/garm.part-05
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 06
++        if: ${{ hashFiles('parts/garm.part-06') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-06
++          path: parts/garm.part-06
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 07
++        if: ${{ hashFiles('parts/garm.part-07') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-07
++          path: parts/garm.part-07
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 08
++        if: ${{ hashFiles('parts/garm.part-08') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-08
++          path: parts/garm.part-08
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 09
++        if: ${{ hashFiles('parts/garm.part-09') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-09
++          path: parts/garm.part-09
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 10
++        if: ${{ hashFiles('parts/garm.part-10') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-10
++          path: parts/garm.part-10
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 11
++        if: ${{ hashFiles('parts/garm.part-11') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-11
++          path: parts/garm.part-11
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 12
++        if: ${{ hashFiles('parts/garm.part-12') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-12
++          path: parts/garm.part-12
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 13
++        if: ${{ hashFiles('parts/garm.part-13') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-13
++          path: parts/garm.part-13
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 14
++        if: ${{ hashFiles('parts/garm.part-14') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-14
++          path: parts/garm.part-14
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 15
++        if: ${{ hashFiles('parts/garm.part-15') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-15
++          path: parts/garm.part-15
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 16
++        if: ${{ hashFiles('parts/garm.part-16') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-16
++          path: parts/garm.part-16
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 17
++        if: ${{ hashFiles('parts/garm.part-17') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-17
++          path: parts/garm.part-17
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 18
++        if: ${{ hashFiles('parts/garm.part-18') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-18
++          path: parts/garm.part-18
++          if-no-files-found: error
++          compression-level: 0
++      - name: Upload binary part 19
++        if: ${{ hashFiles('parts/garm.part-19') != '' }}
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: garm-part-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-19
++          path: parts/garm.part-19
++          if-no-files-found: error
++          compression-level: 0
+diff --git a/docs/cifast-listener-backport.md b/docs/cifast-listener-backport.md
+new file mode 100644
+index 00000000..1692f886
+--- /dev/null
++++ b/docs/cifast-listener-backport.md
+@@ -0,0 +1,40 @@
++# CIFAST scale-set listener transport backport
++
++This branch starts at GARM v0.2.1 commit
++`154638445c3949c1958b01812f69d9a1e4d82684`. It selectively carries the
++scale-set request deadlines and HTTP/2 health checks from upstream main
++`33ec0921418a470ca7e00dfb20ae111595da24e1`. It leaves the generic
++`ForgeCredentials.GetHTTPClient` implementation unchanged.
++
++Both scale-set clients share one unauthenticated transport. Ordinary calls
++have a 60-second client timeout; `GetMessage` uses 100 seconds. For HTTP/2,
++Go 1.26.2 is configured to send a health ping after 30 seconds without frames
++and close the connection if the ping is not acknowledged within 15 seconds.
++These health settings do not establish that the connection negotiated HTTP/2.
++Each scale-set request retains its own authorization header. The transport
++uses the configured CA bundle, proxy, TLS minimum, and dial settings; a
++malformed configured CA bundle refuses construction.
++
++The change adds no application retry for a timed-out mutation. A timeout does
++not prove whether the server completed the operation. Existing listener logic
++leaves an `AcquireJobs` message unprocessed when the request errors, so a
++requeued message can trigger another acquisition attempt even if the server
++completed the earlier one. The existing session loop can also retry a failed
++token refresh on a later tick. These inherited paths do not establish the
++remote state or make replay safe.
++
++The hosted CI job checks the pinned Go version, runs source-bound failure
++controls, builds the embedded UI from the committed lockfile, and uploads the
++binary, source SHA, run ID, Go build information and binary SHA-256. The
++failure controls use a URL from this release's README and an injected failing
++transport; they do not contact GitHub or invent a successful response. A real
++scale-set authorization header was not available as a public, non-secret
++fixture, so runtime authorization-header preservation remains unobserved; the
++unchanged request-header path is subject to source review. CI configuration
++alone is not a passing run or deployment authorization.
++
++The installed controller binary, unit behavior, artifact compatibility,
++quiescence and the active-runner join must be independently observed before a
++seat-authorized window. The acceptance window requires two listener sessions,
++natural slot release and 48 hours of passive observation; those outcomes are
++not established by a source change or CI artifact.
+diff --git a/util/github/scalesets/client.go b/util/github/scalesets/client.go
+index 9583d41a..e7f8f78b 100644
+--- a/util/github/scalesets/client.go
++++ b/util/github/scalesets/client.go
+@@ -15,10 +15,14 @@
+ package scalesets
+ 
+ import (
++	"crypto/tls"
++	"crypto/x509"
+ 	"fmt"
+ 	"io"
++	"net"
+ 	"net/http"
+ 	"sync"
++	"time"
+ 
+ 	"github.com/google/go-github/v84/github"
+ 
+@@ -28,16 +32,56 @@ import (
+ 	"github.com/cloudbase/garm/runner/common"
+ )
+ 
++// Scale-set mutations and ordinary reads must not wait forever. The message
++// broker can legitimately hold a long poll open, so it has a separate bound.
++const requestTimeout = 60 * time.Second
++const longPollRequestTimeout = 100 * time.Second
++
++// scaleSetTransport is unauthenticated: each scale-set request supplies its own
++// Authorization. Generic GitHub clients retain their existing transport.
++func scaleSetTransport(creds params.ForgeCredentials) (*http.Transport, error) {
++	var roots *x509.CertPool
++	if creds.CABundle != nil {
++		roots = x509.NewCertPool()
++		if !roots.AppendCertsFromPEM(creds.CABundle) {
++			return nil, fmt.Errorf("failed to parse CA cert")
++		}
++	}
++	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
++	return &http.Transport{
++		Proxy:       http.ProxyFromEnvironment,
++		DialContext: dialer.DialContext,
++		TLSClientConfig: &tls.Config{
++			RootCAs:    roots,
++			MinVersion: tls.VersionTLS12,
++		},
++		ForceAttemptHTTP2: true,
++		HTTP2: &http.HTTP2Config{
++			SendPingTimeout: 30 * time.Second,
++			PingTimeout:     15 * time.Second,
++		},
++		IdleConnTimeout:       90 * time.Second,
++		TLSHandshakeTimeout:   10 * time.Second,
++		ExpectContinueTimeout: 1 * time.Second,
++	}, nil
++}
++
+ func NewClient(cli common.GithubClient) (*ScaleSetClient, error) {
++	transport, err := scaleSetTransport(cli.GetEntity().Credentials)
++	if err != nil {
++		return nil, fmt.Errorf("building scale-set transport: %w", err)
++	}
+ 	return &ScaleSetClient{
+-		ghCli:      cli,
+-		httpClient: &http.Client{},
++		ghCli:          cli,
++		httpClient:     &http.Client{Timeout: requestTimeout, Transport: transport},
++		longPollClient: &http.Client{Timeout: longPollRequestTimeout, Transport: transport},
+ 	}, nil
+ }
+ 
+ type ScaleSetClient struct {
+-	ghCli      common.GithubClient
+-	httpClient *http.Client
++	ghCli          common.GithubClient
++	httpClient     *http.Client
++	longPollClient *http.Client
+ 
+ 	// scale sets are aparently available through the same security
+ 	// contex that a normal runner would use. We connect to the same
+@@ -82,11 +126,19 @@ func (s *ScaleSetClient) GetGithubClient() (common.GithubClient, error) {
+ }
+ 
+ func (s *ScaleSetClient) Do(req *http.Request) (*http.Response, error) {
+-	if s.httpClient == nil {
++	return s.doWithClient(s.httpClient, req)
++}
++
++func (s *ScaleSetClient) DoLongPoll(req *http.Request) (*http.Response, error) {
++	return s.doWithClient(s.longPollClient, req)
++}
++
++func (s *ScaleSetClient) doWithClient(client *http.Client, req *http.Request) (*http.Response, error) {
++	if client == nil {
+ 		return nil, fmt.Errorf("http client is not initialized")
+ 	}
+ 
+-	resp, err := s.httpClient.Do(req) //nolint:gosec // G704 - URL is constructed from GitHub API endpoints
++	resp, err := client.Do(req) //nolint:gosec // G704 - URL is constructed from GitHub API endpoints
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to dispatch HTTP request: %w", err)
+ 	}
+diff --git a/util/github/scalesets/client_deadlines_test.go b/util/github/scalesets/client_deadlines_test.go
+new file mode 100644
+index 00000000..9c0379ba
+--- /dev/null
++++ b/util/github/scalesets/client_deadlines_test.go
+@@ -0,0 +1,172 @@
++// Copyright 2026 Cloudbase Solutions SRL
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++
++package scalesets
++
++import (
++	"context"
++	"crypto/tls"
++	"errors"
++	"net/http"
++	"os"
++	"regexp"
++	"testing"
++	"time"
++
++	"github.com/cloudbase/garm/params"
++	"github.com/cloudbase/garm/runner/common"
++)
++
++// The source URL comes from the retained v0.2.1 README. No request leaves the
++// process: the only transport used below injects failure, never a response.
++type failingTransport struct {
++	calls int
++}
++
++func (f *failingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	f.calls++
++	<-req.Context().Done()
++	return nil, req.Context().Err()
++}
++
++type clientForTransportTest struct {
++	common.GithubClient
++}
++
++func (clientForTransportTest) GetEntity() params.ForgeEntity {
++	return params.ForgeEntity{}
++}
++
++func TestScaleSetClientsHaveIndependentDeadlinesAndSharedTransport(t *testing.T) {
++	client, err := NewClient(clientForTransportTest{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if client.httpClient.Timeout != 60*time.Second || client.longPollClient.Timeout != 100*time.Second {
++		t.Fatalf("unexpected client timeouts: %v / %v", client.httpClient.Timeout, client.longPollClient.Timeout)
++	}
++	transport, ok := client.httpClient.Transport.(*http.Transport)
++	if !ok || transport != client.longPollClient.Transport {
++		t.Fatal("scale-set clients do not share one base transport")
++	}
++	if !transport.ForceAttemptHTTP2 || transport.HTTP2 == nil || transport.HTTP2.SendPingTimeout != 30*time.Second || transport.HTTP2.PingTimeout != 15*time.Second {
++		t.Fatal("HTTP/2 health check configuration differs")
++	}
++	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
++		t.Fatal("TLS minimum version differs")
++	}
++}
++
++func TestRejectedCABundleUsesRetainedSourceBytes(t *testing.T) {
++	readme, err := os.ReadFile("../../../README.md")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := scaleSetTransport(params.ForgeCredentials{CABundle: readme}); err == nil {
++		t.Fatal("non-certificate source bytes accepted as a CA bundle")
++	}
++}
++
++func TestInjectedFailureIsNotRetried(t *testing.T) {
++	readme, err := os.ReadFile("../../../README.md")
++	if err != nil {
++		t.Fatal(err)
++	}
++	sourceURL := regexp.MustCompile(`https://github[.]com/cloudbase/garm/[^)[:space:]]+`).Find(readme)
++	if len(sourceURL) == 0 {
++		t.Fatal("retained source URL missing")
++	}
++	client, err := NewClient(clientForTransportTest{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, dispatch := range []struct {
++		method string
++		call   func(*http.Request) (*http.Response, error)
++		target *http.Client
++	}{
++		{http.MethodPost, client.Do, client.httpClient},
++		{http.MethodGet, client.DoLongPoll, client.longPollClient},
++	} {
++		transport := &failingTransport{}
++		dispatch.target.Transport = transport
++		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++		req, err := http.NewRequestWithContext(ctx, dispatch.method, string(sourceURL), nil)
++		if err != nil {
++			cancel()
++			t.Fatal(err)
++		}
++		_, err = dispatch.call(req)
++		cancel()
++		if !errors.Is(err, context.DeadlineExceeded) || transport.calls != 1 {
++			t.Fatalf("failure %v, dispatch count %d", err, transport.calls)
++		}
++	}
++}
++
++// GetMessage uses the public README URL only as a request-construction input;
++// the injected transport fails before any network or successful response.
++func TestGetMessageUsesLongPollClientOnInjectedFailure(t *testing.T) {
++	readme, err := os.ReadFile("../../../README.md")
++	if err != nil {
++		t.Fatal(err)
++	}
++	sourceURL := regexp.MustCompile(`https://github[.]com/cloudbase/garm/[^)[:space:]]+`).Find(readme)
++	if len(sourceURL) == 0 {
++		t.Fatal("retained source URL missing")
++	}
++	client, err := NewClient(clientForTransportTest{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	ordinary := &failingTransport{}
++	poll := &failingTransport{}
++	client.httpClient.Transport = ordinary
++	client.longPollClient.Transport = poll
++	session := &MessageSession{ssCli: client, session: &params.RunnerScaleSetSession{MessageQueueURL: string(sourceURL)}}
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	_, err = session.GetMessage(ctx, 0, 2)
++	if !errors.Is(err, context.DeadlineExceeded) || poll.calls != 1 || ordinary.calls != 0 {
++		t.Fatalf("failure %v, long-poll calls %d, ordinary calls %d", err, poll.calls, ordinary.calls)
++	}
++}
++
++// A background context has no caller deadline. Shortening only the test
++// clients exercises cancellation by http.Client.Timeout itself.
++func TestClientTimeoutCancelsInjectedBlockedRequests(t *testing.T) {
++	readme, err := os.ReadFile("../../../README.md")
++	if err != nil {
++		t.Fatal(err)
++	}
++	sourceURL := regexp.MustCompile(`https://github[.]com/cloudbase/garm/[^)[:space:]]+`).Find(readme)
++	if len(sourceURL) == 0 {
++		t.Fatal("retained source URL missing")
++	}
++	client, err := NewClient(clientForTransportTest{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, dispatch := range []struct {
++		method string
++		call   func(*http.Request) (*http.Response, error)
++		target *http.Client
++	}{
++		{http.MethodPost, client.Do, client.httpClient},
++		{http.MethodGet, client.DoLongPoll, client.longPollClient},
++	} {
++		transport := &failingTransport{}
++		dispatch.target.Transport = transport
++		dispatch.target.Timeout = 20 * time.Millisecond
++		req, err := http.NewRequestWithContext(context.Background(), dispatch.method, string(sourceURL), nil)
++		if err != nil {
++			t.Fatal(err)
++		}
++		_, err = dispatch.call(req)
++		if !errors.Is(err, context.DeadlineExceeded) || transport.calls != 1 {
++			t.Fatalf("failure %v, dispatch count %d", err, transport.calls)
++		}
++	}
++}
+diff --git a/util/github/scalesets/message_sessions.go b/util/github/scalesets/message_sessions.go
+index b75890c3..ddeb230e 100644
+--- a/util/github/scalesets/message_sessions.go
++++ b/util/github/scalesets/message_sessions.go
+@@ -198,7 +198,7 @@ func (m *MessageSession) GetMessage(ctx context.Context, lastMessageID int64, ma
+ 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.session.MessageQueueAccessToken))
+ 	req.Header.Set(maxCapacityHeader, fmt.Sprintf("%d", maxCapacity))
+ 
+-	resp, err := m.ssCli.Do(req)
++	resp, err := m.ssCli.DoLongPoll(req)
+ 	if err != nil {
+ 		return params.RunnerScaleSetMessage{}, fmt.Errorf("request to %s failed: %w", req.URL.String(), err)
+ 	}
