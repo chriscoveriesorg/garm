@@ -68,6 +68,10 @@ var (
 		"rockylinux": params.Linux,
 		"rocky":      params.Linux,
 		"windows":    params.Windows,
+		"macos":      params.MacOS,
+		"darwin":     params.MacOS,
+		"osx":        params.MacOS,
+		"os x":       params.MacOS,
 	}
 
 	githubArchMapping map[string]string = map[string]string{
@@ -83,12 +87,14 @@ var (
 	githubOSTypeMap map[string]string = map[string]string{
 		"linux":   "linux",
 		"windows": "win",
+		"macos":   "osx",
 	}
 
 	//
 	githubOSTag = map[params.OSType]string{
 		params.Linux:   "Linux",
 		params.Windows: "Windows",
+		params.MacOS:   "macOS",
 	}
 )
 
