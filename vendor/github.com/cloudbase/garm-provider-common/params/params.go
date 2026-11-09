@@ -30,6 +30,7 @@ type (
 const (
 	Windows OSType = "windows"
 	Linux   OSType = "linux"
+	MacOS   OSType = "macOS"
 	Unknown OSType = "unknown"
 )
 
@@ -205,7 +206,8 @@ type ProviderInstance struct {
 	// instance.
 	Name string `json:"name,omitempty"`
 
-	// OSType is the operating system type. For now, only Linux and
+	// OSType is the operating system type. For now, Linux, Windows
+	// and macOS are
 	// Windows are supported.
 	OSType OSType `json:"os_type,omitempty"`
 
