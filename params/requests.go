@@ -999,6 +999,9 @@ func (c *CreateTemplateParams) Validate() error {
 	default:
 		return fmt.Errorf("invalid OS type: %q", c.OSType)
 	}
+	if c.OSType == commonParams.MacOS && c.ForgeType != GithubEndpointType {
+		return fmt.Errorf("macos admission templates require the github forge")
+	}
 
 	switch c.ForgeType {
 	case GithubEndpointType, GiteaEndpointType:

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 
 	runnerErrors "github.com/cloudbase/garm-provider-common/errors"
+	commonParams "github.com/cloudbase/garm-provider-common/params"
 	"github.com/cloudbase/garm/auth"
 	"github.com/cloudbase/garm/params"
 	"github.com/cloudbase/garm/util/appdefaults"
@@ -236,6 +237,11 @@ func (r *Runner) UpdateScaleSetByID(ctx context.Context, scaleSetID uint, param 
 func (r *Runner) CreateEntityScaleSet(ctx context.Context, entityType params.ForgeEntityType, entityID string, param params.CreateScaleSetParams) (scaleSetRet params.ScaleSet, err error) {
 	if !auth.IsAdmin(ctx) {
 		return params.ScaleSet{}, runnerErrors.ErrUnauthorized
+	}
+	// macOS admission must not create a GitHub set for a platform whose
+	// Actions runner tools cannot be selected. Linux/Windows behavior is unchanged.
+	if param.OSType == commonParams.MacOS && param.OSArch != commonParams.Amd64 && param.OSArch != commonParams.Arm64 {
+		return params.ScaleSet{}, runnerErrors.NewBadRequestError("unsupported macos OS architecture: %s", param.OSArch)
 	}
 
 	if param.RunnerBootstrapTimeout == 0 {
