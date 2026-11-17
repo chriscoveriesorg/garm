@@ -187,7 +187,10 @@ jobs:
               db_migration_files: $mig[0],
               binary_sha256: {garm: $binsha, "garm-cli": $clisha},
               external_provider_interface: $iface}' > out/manifest.json
-          cat /tmp/config-delta.txt > out/config-delta.txt || true
+          cat /tmp/config-delta.txt > out/config-delta.txt
+          if [ ! -s out/config-delta.txt ]; then
+            printf 'no config delta at upstream %s\n' "$UPSTREAM_SHA" > out/config-delta.txt
+          fi
           cat out/manifest.json
       - name: Push branch, prerelease and PR
         env:
