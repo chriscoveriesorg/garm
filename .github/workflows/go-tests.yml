@@ -18,8 +18,10 @@ permissions: {}
 
 jobs:
   linters:
+    # This fork tests the applied patch tree in CIFAST upstream update.
+    if: github.repository != 'chriscoveriesorg/garm'
     name: Linters
-    runs-on: ubuntu-noble-garm
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -41,7 +43,9 @@ jobs:
           make verify
 
   go-tests:
-    runs-on: ubuntu-noble-garm
+    # This fork tests the applied patch tree in CIFAST upstream update.
+    if: github.repository != 'chriscoveriesorg/garm'
+    runs-on: ubuntu-24.04
     needs: [linters]
     steps:
       - name: Install dependencies
@@ -82,8 +86,10 @@ jobs:
           make webui-test
 
   go-tests-postgres:
+    # This fork tests the applied patch tree in CIFAST upstream update.
+    if: github.repository != 'chriscoveriesorg/garm'
     name: Go Tests (PostgreSQL)
-    runs-on: ubuntu-noble-garm
+    runs-on: ubuntu-24.04
     needs: [linters]
 
     services:

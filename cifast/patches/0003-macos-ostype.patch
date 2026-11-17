@@ -3,7 +3,7 @@ From: cifast-devin-2 <cifast-devin-2@cccc.local>
 Date: Sun, 8 Nov 2026 08:59:43 +0000
 Subject: [PATCH] Add macOS OSType support for scale sets and pools
 
-Adds params.MacOS ("macOS") to garm-provider-common, maps macos/darwin/
+Adds params.MacOS ("macos") to garm-provider-common, maps macos/darwin/
 osx names and the GitHub tools download label "osx" in util, accepts it
 in runner supportedOSType and CreateTemplateParams validation. Lets a
 scale set be declared macos/arm64 instead of faking linux/arm64.
@@ -70,7 +70,7 @@ index a4e55291..e9faaeda 100644
  const (
  	Windows OSType = "windows"
  	Linux   OSType = "linux"
-+	MacOS   OSType = "macOS"
++	MacOS   OSType = "macos"
  	Unknown OSType = "unknown"
  )
  
