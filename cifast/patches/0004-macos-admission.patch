@@ -1,0 +1,550 @@
+diff --git a/cmd/garm-cli/cmd/templates.go b/cmd/garm-cli/cmd/templates.go
+index d6d74b8e..5083358e 100644
+--- a/cmd/garm-cli/cmd/templates.go
++++ b/cmd/garm-cli/cmd/templates.go
+@@ -48,7 +48,7 @@ var templatesCmd = &cobra.Command{
+ 	Short:        "Manage templates",
+ 	Long: `Manage runner install templates.
+ 
+-The commands in this group enable you to manage github and gitea runner install templates for both Linux and Windows.
++The commands in this group manage Linux/Windows install templates and GitHub macos admission-only templates.
+ Templates are a convenience feature that allows providers to point the userdata of the new runner to an URL in GARM
+ which will serve an OS specific script (catered to the runner type) that will set up the runner software on a new
+ generic machine.
+@@ -80,9 +80,13 @@ var templateCreateCmd = &cobra.Command{
+ 
+ 		osType := commonParams.OSType(templateOSType)
+ 		switch osType {
+-		case commonParams.Linux, commonParams.Windows:
++		case commonParams.Linux, commonParams.Windows, commonParams.MacOS:
+ 		default:
+-			return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(params.GithubEndpointType), string(params.GiteaEndpointType)}, ", "))
++			return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(commonParams.Linux), string(commonParams.Windows), string(commonParams.MacOS)}, ", "))
++		}
++
++		if osType == commonParams.MacOS && forge != params.GithubEndpointType {
++			return fmt.Errorf("macos admission templates require the github forge")
+ 		}
+ 
+ 		if templatePath == "" {
+@@ -394,9 +398,13 @@ restore only a specific template. When either flag is specified, both must be pr
+ 
+ 			osType := commonParams.OSType(templateOSType)
+ 			switch osType {
+-			case commonParams.Linux, commonParams.Windows:
++			case commonParams.Linux, commonParams.Windows, commonParams.MacOS:
+ 			default:
+-				return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(commonParams.Linux), string(commonParams.Windows)}, ", "))
++				return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(commonParams.Linux), string(commonParams.Windows), string(commonParams.MacOS)}, ", "))
++			}
++
++			if osType == commonParams.MacOS && forge != params.GithubEndpointType {
++				return fmt.Errorf("macos admission templates require the github forge")
+ 			}
+ 
+ 			restoreReq.Body.Forge = forge
+diff --git a/cmd/garm-cli/cmd/templates_macos_test.go b/cmd/garm-cli/cmd/templates_macos_test.go
+new file mode 100644
+index 00000000..31f38c5d
+--- /dev/null
++++ b/cmd/garm-cli/cmd/templates_macos_test.go
+@@ -0,0 +1,76 @@
++package cmd
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	commonParams "github.com/cloudbase/garm-provider-common/params"
++	"github.com/cloudbase/garm/params"
++)
++
++func TestMacOSTemplateCLIRequests(t *testing.T) {
++	oldInit, oldClient, oldAuth, oldRaw := needsInit, apiCli, authToken, rawHTTPClient
++	oldOS, oldForge, oldPath, oldName := templateOSType, templateForgeType, templatePath, templateName
++	osFlag, forgeFlag := templateRestoreCmd.Flags().Lookup("os-type"), templateRestoreCmd.Flags().Lookup("forge-type")
++	oldOSChanged, oldForgeChanged := osFlag.Changed, forgeFlag.Changed
++	t.Cleanup(func() {
++		needsInit, apiCli, authToken, rawHTTPClient = oldInit, oldClient, oldAuth, oldRaw
++		templateOSType, templateForgeType, templatePath, templateName = oldOS, oldForge, oldPath, oldName
++		osFlag.Changed, forgeFlag.Changed = oldOSChanged, oldForgeChanged
++	})
++	var created params.CreateTemplateParams
++	var restored params.RestoreTemplateRequest
++	mux := http.NewServeMux()
++	mux.HandleFunc("POST /api/v1/templates", func(w http.ResponseWriter, req *http.Request) {
++		if err := json.NewDecoder(req.Body).Decode(&created); err != nil {
++			t.Error(err)
++			w.WriteHeader(400)
++			return
++		}
++		if err := created.Validate(); err != nil {
++			t.Error(err)
++			w.WriteHeader(400)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		if err := json.NewEncoder(w).Encode(params.Template{ID: 6, Name: created.Name, OSType: created.OSType, ForgeType: created.ForgeType, Data: created.Data}); err != nil {
++			t.Error(err)
++		}
++	})
++	mux.HandleFunc("POST /api/v1/templates/restore", func(w http.ResponseWriter, req *http.Request) {
++		if err := json.NewDecoder(req.Body).Decode(&restored); err != nil {
++			t.Error(err)
++			w.WriteHeader(400)
++			return
++		}
++		w.WriteHeader(http.StatusOK)
++	})
++	srv := httptest.NewServer(mux)
++	defer srv.Close()
++	initAPIClient(srv.URL, "protocol-control")
++	needsInit = false
++	templateOSType, templateForgeType, templateName = "macos", "github", "owned-macos"
++	templatePath = filepath.Join(t.TempDir(), "stub.sh")
++	require.NoError(t, os.WriteFile(templatePath, []byte("#!/bin/sh\nexit 1\n"), 0o600))
++	require.NoError(t, templateCreateCmd.RunE(templateCreateCmd, nil))
++	require.Equal(t, commonParams.MacOS, created.OSType)
++	require.Equal(t, params.GithubEndpointType, created.ForgeType)
++	osFlag.Changed, forgeFlag.Changed = true, true
++	require.NoError(t, templateRestoreCmd.RunE(templateRestoreCmd, nil))
++	require.Equal(t, commonParams.MacOS, restored.OSType)
++	require.Equal(t, params.GithubEndpointType, restored.Forge)
++	require.False(t, restored.RestoreAll)
++	templateForgeType = "gitea"
++	require.ErrorContains(t, templateCreateCmd.RunE(templateCreateCmd, nil), "require the github forge")
++	require.ErrorContains(t, templateRestoreCmd.RunE(templateRestoreCmd, nil), "require the github forge")
++	templateForgeType = "github"
++	templateOSType = "macOS"
++	require.ErrorContains(t, templateCreateCmd.RunE(templateCreateCmd, nil), "invalid OS type")
++	require.ErrorContains(t, templateRestoreCmd.RunE(templateRestoreCmd, nil), "invalid OS type")
++}
+diff --git a/internal/templates/templates.go b/internal/templates/templates.go
+index 9535f58d..efa7ca8c 100644
+--- a/internal/templates/templates.go
++++ b/internal/templates/templates.go
+@@ -71,6 +71,10 @@ func GetTemplateContent(osType commonParams.OSType, forge params.EndpointType) (
+ 	case params.GithubEndpointType, params.GiteaEndpointType:
+ 		switch osType {
+ 		case commonParams.Linux, commonParams.Windows:
++		case commonParams.MacOS:
++			if forge != params.GithubEndpointType {
++				return nil, runnerErrors.NewNotFoundError("macos admission templates require the github forge")
++			}
+ 		default:
+ 			return nil, runnerErrors.NewNotFoundError("could not find template for forge %s and OS type: %q", forge, osType)
+ 		}
+diff --git a/internal/templates/userdata/github_macos_userdata.tmpl b/internal/templates/userdata/github_macos_userdata.tmpl
+new file mode 100644
+index 00000000..a0296255
+--- /dev/null
++++ b/internal/templates/userdata/github_macos_userdata.tmpl
+@@ -0,0 +1,3 @@
++#!/bin/sh
++printf '%s\n' 'cifast macdad: GARM install template is admission-only; the provider uses JIT credentials' >&2
++exit 1
+diff --git a/internal/testing/testdata/runner-downloads-20261117.json b/internal/testing/testdata/runner-downloads-20261117.json
+new file mode 100644
+index 00000000..33ba811b
+--- /dev/null
++++ b/internal/testing/testdata/runner-downloads-20261117.json
+@@ -0,0 +1,44 @@
++[
++  {
++    "os": "osx",
++    "architecture": "x64",
++    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-osx-x64-2.338.2.tar.gz",
++    "filename": "actions-runner-osx-x64-2.338.2.tar.gz"
++  },
++  {
++    "os": "linux",
++    "architecture": "x64",
++    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz",
++    "filename": "actions-runner-linux-x64-2.338.2.tar.gz"
++  },
++  {
++    "os": "linux",
++    "architecture": "arm",
++    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-arm-2.338.2.tar.gz",
++    "filename": "actions-runner-linux-arm-2.338.2.tar.gz"
++  },
++  {
++    "os": "win",
++    "architecture": "x64",
++    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-win-x64-2.338.2.zip",
++    "filename": "actions-runner-win-x64-2.338.2.zip"
++  },
++  {
++    "os": "linux",
++    "architecture": "arm64",
++    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-arm64-2.338.2.tar.gz",
++    "filename": "actions-runner-linux-arm64-2.338.2.tar.gz"
++  },
++  {
++    "os": "osx",
++    "architecture": "arm64",
++    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-osx-arm64-2.338.2.tar.gz",
++    "filename": "actions-runner-osx-arm64-2.338.2.tar.gz"
++  },
++  {
++    "os": "win",
++    "architecture": "arm64",
++    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-win-arm64-2.338.2.zip",
++    "filename": "actions-runner-win-arm64-2.338.2.zip"
++  }
++]
+diff --git a/internal/testing/testdata/runner-downloads-20261117.md b/internal/testing/testdata/runner-downloads-20261117.md
+new file mode 100644
+index 00000000..f086c8e7
+--- /dev/null
++++ b/internal/testing/testdata/runner-downloads-20261117.md
+@@ -0,0 +1,7 @@
++# Runner download fixture
++
++Source: GitHub `GET /orgs/chriscoveriesorg/actions/runners/downloads`, read 2026-11-17. Only `os`, `architecture`, `download_url`, and `filename` were projected; no values were synthesized.
++
++Raw HTTP response SHA256: `37468fa68e9041ec7e4b8d3a618739c6e4912443c03d35e30d222e505f3a1e97`. Body SHA256: `7214984e083e0c2d2ccfa9668dcfea64407835e6a1ebcf817b46acc2e5cd40f3`.
++
++The Linux bootstrap image/flavor/architecture operands are the fields of the read-only GARM `scaleset show 25 --format json` capture read 2026-11-17: `claw-rust-runner-v4`, `garm-rust-root20-m7-cache`, `amd64`. macOS request transitions and temporary HTTP/provider replies are directed protocol controls, not native VM or GitHub set-creation captures.
+diff --git a/params/requests.go b/params/requests.go
+index a15cd0bc..6a565429 100644
+--- a/params/requests.go
++++ b/params/requests.go
+@@ -999,6 +999,9 @@ func (c *CreateTemplateParams) Validate() error {
+ 	default:
+ 		return fmt.Errorf("invalid OS type: %q", c.OSType)
+ 	}
++	if c.OSType == commonParams.MacOS && c.ForgeType != GithubEndpointType {
++		return fmt.Errorf("macos admission templates require the github forge")
++	}
+ 
+ 	switch c.ForgeType {
+ 	case GithubEndpointType, GiteaEndpointType:
+diff --git a/runner/macos_admission_test.go b/runner/macos_admission_test.go
+new file mode 100644
+index 00000000..9f7dbd05
+--- /dev/null
++++ b/runner/macos_admission_test.go
+@@ -0,0 +1,172 @@
++package runner
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	commonParams "github.com/cloudbase/garm-provider-common/params"
++	commonUtil "github.com/cloudbase/garm-provider-common/util"
++	"github.com/cloudbase/garm/auth"
++	"github.com/cloudbase/garm/cache"
++	"github.com/cloudbase/garm/database"
++	"github.com/cloudbase/garm/internal/templates"
++	garmTesting "github.com/cloudbase/garm/internal/testing"
++	"github.com/cloudbase/garm/params"
++)
++
++// These tool fields are projected from the GitHub org runner-downloads API,
++// read on 2026-11-17. HTTP authentication/create replies below are protocol
++// controls, not recordings of a live GitHub set creation.
++func macOSTestDownloads(t *testing.T) []commonParams.RunnerApplicationDownload {
++	t.Helper()
++	body, err := os.ReadFile("../internal/testing/testdata/runner-downloads-20261117.json")
++	require.NoError(t, err)
++	var tools []commonParams.RunnerApplicationDownload
++	require.NoError(t, json.Unmarshal(body, &tools))
++	return tools
++}
++
++func TestMacOSExternalSetAdmissionAndMetadata(t *testing.T) {
++	var creates atomic.Int32
++	mux := http.NewServeMux()
++	var srv *httptest.Server
++	mux.HandleFunc("POST /api/v3/repos/test-owner/test-repo/actions/runners/registration-token", func(w http.ResponseWriter, _ *http.Request) {
++		_, _ = fmt.Fprint(w, `{"token":"protocol-control"}`)
++	})
++	mux.HandleFunc("POST /api/v3/actions/runner-registration", func(w http.ResponseWriter, _ *http.Request) {
++		_, _ = fmt.Fprintf(w, `{"url":%q,"token":"protocol-control"}`, srv.URL+"/pipeline")
++	})
++	mux.HandleFunc("POST /pipeline/_apis/runtime/runnerscalesets", func(w http.ResponseWriter, req *http.Request) {
++		var set params.RunnerScaleSet
++		if err := json.NewDecoder(req.Body).Decode(&set); err != nil {
++			w.WriteHeader(http.StatusBadRequest)
++			return
++		}
++		set.ID = int(creates.Add(1))
++		if err := json.NewEncoder(w).Encode(set); err != nil {
++			t.Error(err)
++		}
++	})
++	srv = httptest.NewServer(mux)
++	defer srv.Close()
++
++	db, err := database.NewDatabase(context.Background(), garmTesting.GetTestSqliteDBConfig(t))
++	require.NoError(t, err)
++	ctx := garmTesting.ImpersonateAdminContext(context.Background(), db, t)
++	endpoint, err := db.CreateGithubEndpoint(ctx, params.CreateGithubEndpointParams{
++		Name: "macos-admission-control", APIBaseURL: srv.URL + "/api/v3/", UploadBaseURL: srv.URL + "/api/uploads/", BaseURL: srv.URL,
++	})
++	require.NoError(t, err)
++	creds := garmTesting.CreateTestGithubCredentials(ctx, "macos-admission-control", db, t, endpoint)
++	repo, err := db.CreateRepository(ctx, "test-owner", "test-repo", creds, "protocol-control", params.PoolBalancerTypeRoundRobin, false)
++	require.NoError(t, err)
++	entity, err := repo.GetEntity()
++	require.NoError(t, err)
++	r := &Runner{ctx: ctx, store: db}
++	tools := macOSTestDownloads(t)
++	cache.SetGithubToolsCache(entity, tools)
++	defer cache.DeleteGithubToolsCache(entity.ID)
++
++	macBody, err := templates.GetTemplateContent(commonParams.MacOS, params.GithubEndpointType)
++	require.NoError(t, err)
++	// This is a safety stub, not an installer, even when explicitly restored.
++	stub := filepath.Join(t.TempDir(), "admission.sh")
++	require.NoError(t, os.WriteFile(stub, macBody, 0o600))
++	output, err := exec.Command("/bin/sh", stub).CombinedOutput()
++	require.Error(t, err)
++	require.Contains(t, string(output), "GARM install template is admission-only; the provider uses JIT credentials")
++
++	for _, platform := range []struct {
++		os   commonParams.OSType
++		arch commonParams.OSArch
++	}{
++		{commonParams.MacOS, commonParams.Arm64}, {commonParams.Linux, commonParams.Amd64},
++	} {
++		t.Run(string(platform.os), func(t *testing.T) {
++			body := macBody
++			if platform.os == commonParams.Linux {
++				body, err = templates.GetTemplateContent(platform.os, params.GithubEndpointType)
++				require.NoError(t, err)
++			}
++			tpl, err := r.CreateTemplate(ctx, params.CreateTemplateParams{
++				Name: "owned-" + string(platform.os), OSType: platform.os, ForgeType: params.GithubEndpointType, Data: body,
++			})
++			require.NoError(t, err)
++			require.NotEqual(t, params.SystemUser, tpl.Owner)
++			request := params.CreateScaleSetParams{
++				Name: "external-" + string(platform.os), ProviderName: "external-control", MaxRunners: 1,
++				Image: "macdad-tahoe-v1", Flavor: "tart-c4-m12288", OSType: platform.os, OSArch: platform.arch,
++				TemplateID: &tpl.ID,
++			}
++			if platform.os == commonParams.Linux {
++				request.Image = "claw-rust-runner-v4"
++				request.Flavor = "garm-rust-root20-m7-cache"
++			}
++			if platform.os == commonParams.MacOS {
++				before := creates.Load()
++				for _, fault := range []string{"wrong-os", "wrong-arch", "no-explicit-template"} {
++					bad := request
++					switch fault {
++					case "wrong-os":
++						bad.OSType = commonParams.Linux
++					case "wrong-arch":
++						bad.OSArch = commonParams.OSArch("unknown")
++					case "no-explicit-template":
++						bad.TemplateID = nil
++					}
++					_, err := r.CreateEntityScaleSet(ctx, entity.EntityType, entity.ID, bad)
++					require.Error(t, err, fault)
++				}
++				require.Equal(t, before, creates.Load(), "refusals precede GitHub writes")
++			}
++			set, err := r.CreateEntityScaleSet(ctx, entity.EntityType, entity.ID, request)
++			require.NoError(t, err)
++			require.Equal(t, request.OSType, set.OSType)
++			require.Equal(t, request.OSArch, set.OSArch)
++			require.Equal(t, tpl.ID, set.TemplateID)
++			require.Equal(t, request.ProviderName, set.ProviderName)
++			instance, err := db.CreateScaleSetInstance(ctx, set.ID, params.CreateInstanceParams{
++				Name: "garm-" + string(platform.os), OSType: set.OSType, OSArch: set.OSArch,
++			})
++			require.NoError(t, err)
++			ic := auth.SetInstanceParams(context.Background(), instance)
++			ic = auth.SetInstanceRunnerStatus(ic, params.RunnerPending)
++			ic = auth.SetInstanceEntity(ic, entity)
++			ic = auth.SetInstanceAuthToken(ic, "protocol-control")
++			selected, err := r.getRunnerInstallTemplateContext(instance, entity, "protocol-control", nil)
++			require.NoError(t, err)
++			want, err := commonUtil.GetTools(platform.os, platform.arch, tools)
++			require.NoError(t, err)
++			require.Equal(t, want.GetFilename(), selected.FileName)
++			require.Equal(t, want.GetDownloadURL(), selected.DownloadURL)
++			if platform.os == commonParams.MacOS {
++				require.Equal(t, "osx", want.GetOS())
++				require.Equal(t, "arm64", want.GetArchitecture())
++			}
++			script, err := r.GetRunnerInstallScript(ic)
++			require.NoError(t, err)
++			if platform.os == commonParams.MacOS {
++				require.Equal(t, macBody, script)
++			} else {
++				require.NotEmpty(t, script)
++			}
++		})
++	}
++	_, err = commonUtil.GetTools(commonParams.OSType("unknown"), commonParams.Arm64, tools)
++	require.Error(t, err)
++	_, err = commonUtil.GetTools(commonParams.MacOS, commonParams.OSArch("unknown"), tools)
++	require.Error(t, err)
++	_, err = templates.GetTemplateContent(commonParams.MacOS, params.GiteaEndpointType)
++	require.Error(t, err)
++	require.Equal(t, "macos", string(commonParams.MacOS))
++}
+diff --git a/runner/scalesets.go b/runner/scalesets.go
+index 99ae2547..994888b5 100644
+--- a/runner/scalesets.go
++++ b/runner/scalesets.go
+@@ -21,6 +21,7 @@ import (
+ 	"log/slog"
+ 
+ 	runnerErrors "github.com/cloudbase/garm-provider-common/errors"
++	commonParams "github.com/cloudbase/garm-provider-common/params"
+ 	"github.com/cloudbase/garm/auth"
+ 	"github.com/cloudbase/garm/params"
+ 	"github.com/cloudbase/garm/util/appdefaults"
+@@ -237,6 +238,11 @@ func (r *Runner) CreateEntityScaleSet(ctx context.Context, entityType params.For
+ 	if !auth.IsAdmin(ctx) {
+ 		return params.ScaleSet{}, runnerErrors.ErrUnauthorized
+ 	}
++	// macOS admission must not create a GitHub set for a platform whose
++	// Actions runner tools cannot be selected. Linux/Windows behavior is unchanged.
++	if param.OSType == commonParams.MacOS && param.OSArch != commonParams.Amd64 && param.OSArch != commonParams.Arm64 {
++		return params.ScaleSet{}, runnerErrors.NewBadRequestError("unsupported macos OS architecture: %s", param.OSArch)
++	}
+ 
+ 	if param.RunnerBootstrapTimeout == 0 {
+ 		param.RunnerBootstrapTimeout = appdefaults.DefaultRunnerBootstrapTimeout
+diff --git a/vendor/github.com/cloudbase/garm-provider-common/util/util.go b/vendor/github.com/cloudbase/garm-provider-common/util/util.go
+index 8a9b65fa..d8361a35 100644
+--- a/vendor/github.com/cloudbase/garm-provider-common/util/util.go
++++ b/vendor/github.com/cloudbase/garm-provider-common/util/util.go
+@@ -193,10 +193,11 @@ func OSToOSType(os string) (params.OSType, error) {
+ }
+ 
+ func GetTools(osType params.OSType, osArch params.OSArch, tools []params.RunnerApplicationDownload) (params.RunnerApplicationDownload, error) {
+-	// Validate image OS. Linux only for now.
++	// Validate the runner platform before selecting the GitHub tool.
+ 	switch osType {
+ 	case params.Linux:
+ 	case params.Windows:
++	case params.MacOS:
+ 	default:
+ 		return params.RunnerApplicationDownload{}, fmt.Errorf("unsupported OS type: %s", osType)
+ 	}
+diff --git a/workers/provider/macos_bootstrap_test.go b/workers/provider/macos_bootstrap_test.go
+new file mode 100644
+index 00000000..ce22bf34
+--- /dev/null
++++ b/workers/provider/macos_bootstrap_test.go
+@@ -0,0 +1,97 @@
++//go:build testing
++
++package provider
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	commonParams "github.com/cloudbase/garm-provider-common/params"
++	"github.com/cloudbase/garm/auth"
++	"github.com/cloudbase/garm/cache"
++	"github.com/cloudbase/garm/config"
++	"github.com/cloudbase/garm/params"
++	external "github.com/cloudbase/garm/runner/providers/v0.1.0"
++)
++
++type bootstrapTokenControl struct{}
++
++func (bootstrapTokenControl) NewInstanceJWTToken(_ params.Instance, _ params.ForgeEntity, _ uint) (string, error) {
++	return "protocol-control", nil
++}
++func (bootstrapTokenControl) NewAgentJWTToken(_ params.Instance, _ params.ForgeEntity) (string, error) {
++	return "protocol-control", nil
++}
++
++type bootstrapStoreControl struct {
++	storeStub
++	entity params.ForgeEntity
++}
++
++func (b *bootstrapStoreControl) InstanceTokenGetter() auth.InstanceTokenGetter {
++	return bootstrapTokenControl{}
++}
++func (b *bootstrapStoreControl) GetGithubEntity(_ context.Context, _ params.ForgeEntity) (params.ForgeEntity, error) {
++	return b.entity, nil
++}
++
++func TestMacOSAndLinuxExternalBootstrap(t *testing.T) {
++	// Tools are a field projection of the real GitHub downloads listing read
++	// 2026-11-17; OS transitions and the temporary provider are directed controls.
++	body, err := os.ReadFile("../../internal/testing/testdata/runner-downloads-20261117.json")
++	require.NoError(t, err)
++	var tools []commonParams.RunnerApplicationDownload
++	require.NoError(t, json.Unmarshal(body, &tools))
++	for _, osType := range []commonParams.OSType{commonParams.MacOS, commonParams.Linux} {
++		t.Run(string(osType), func(t *testing.T) {
++			tmp := t.TempDir()
++			capture := filepath.Join(tmp, "bootstrap.json")
++			t.Setenv("BOOTSTRAP_CONTROL_CAPTURE", capture)
++			name := "garm-" + string(osType)
++			// This subprocess records the actual v0.1.0 provider stdin before
++			// returning a protocol result. It does not simulate a native VM boot.
++			program := "#!/bin/sh\nset -eu\ncat > \"$BOOTSTRAP_CONTROL_CAPTURE\"\nprintf '%s\\n' '{\"provider_id\":\"" + name + "\",\"name\":\"" + name + "\",\"status\":\"running\"}'\n"
++			executable := filepath.Join(tmp, "provider")
++			require.NoError(t, os.WriteFile(executable, []byte(program), 0o700))
++			provider, err := external.NewProvider(context.Background(), &config.Provider{
++				Name: "external-control", ProviderType: params.ExternalProvider,
++				External: config.External{ProviderExecutable: executable, ExecTimeoutSeconds: 5, EnvironmentVariables: []string{"BOOTSTRAP_CONTROL_CAPTURE"}},
++			}, "controller-control")
++			require.NoError(t, err)
++			entity := params.ForgeEntity{ID: "bootstrap-control", Owner: "chriscoveriesorg", EntityType: params.ForgeEntityTypeOrganization}
++			helper := &bootstrapStoreControl{entity: entity}
++			set := params.ScaleSet{ID: 25, OrgID: entity.ID, OSType: osType, OSArch: commonParams.Arm64, TemplateID: 6,
++				Image: "macdad-tahoe-v1", Flavor: "tart-c4-m12288", RunnerBootstrapTimeout: 20}
++			if osType == commonParams.Linux {
++				set.OSArch = commonParams.Amd64
++				set.Image = "claw-rust-runner-v4"
++				set.Flavor = "garm-rust-root20-m7-cache"
++			}
++			cache.SetGithubToolsCache(entity, tools)
++			defer cache.DeleteGithubToolsCache(entity.ID)
++			instance := params.Instance{Name: name, OSType: set.OSType, OSArch: set.OSArch, MetadataURL: "http://metadata-control", CallbackURL: "http://callback-control"}
++			manager, err := newInstanceManager(context.Background(), instance, set, provider, helper)
++			require.NoError(t, err)
++			require.NoError(t, manager.handleCreateInstanceInProvider(instance))
++			raw, err := os.ReadFile(capture)
++			require.NoError(t, err)
++			var got commonParams.BootstrapInstance
++			require.NoError(t, json.Unmarshal(raw, &got))
++			require.Equal(t, set.OSType, got.OSType)
++			require.Equal(t, set.OSArch, got.OSArch)
++			require.Equal(t, set.Image, got.Image)
++			require.Equal(t, set.Flavor, got.Flavor)
++			require.Equal(t, name, got.Name)
++			require.Equal(t, tools, got.Tools)
++			require.True(t, got.JitConfigEnabled)
++			require.Equal(t, "protocol-control", got.InstanceToken)
++			require.Equal(t, instance.MetadataURL, got.MetadataURL)
++			require.Equal(t, manager.pseudoPoolID(), got.PoolID)
++		})
++	}
++}

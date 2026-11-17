@@ -6,6 +6,9 @@ name: CIFAST upstream update
 # conflict is the ONLY failure mode that needs an agent.
 
 on:
+  pull_request:
+    branches: [main]
+    paths: ['cifast/**', '.github/workflows/cifast-upstream-update.yml']
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -20,7 +23,53 @@ permissions:
   pull-requests: write
 
 jobs:
+  patch-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.2'
+          check-latest: false
+          cache: false
+      - name: Apply the reviewed series to the deployed upstream base
+        run: |
+          set -euo pipefail
+          cp -r cifast/patches "$RUNNER_TEMP/patches"
+          git fetch --no-tags --quiet https://github.com/cloudbase/garm.git 158fe569f61a491198501162805be4cd0c843da0
+          git checkout --detach 158fe569f61a491198501162805be4cd0c843da0
+          git config user.name 'Chriscoveries'
+          git config user.email 'chriscoveries@users.noreply.github.com'
+          while IFS= read -r patch; do
+            [ -n "$patch" ] || continue
+            sha256sum "$RUNNER_TEMP/patches/$patch"
+            git apply --check "$RUNNER_TEMP/patches/$patch"
+            git apply "$RUNNER_TEMP/patches/$patch"
+            git add -A
+            git commit -qm "Apply $patch"
+          done < "$RUNNER_TEMP/patches/series"
+          git rev-parse HEAD 'HEAD^{tree}'
+      - name: Test the applied tree and build both binaries
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libbtrfs-dev build-essential apg jq
+          make go-test TEST_ARGS="-parallel=4"
+          VERSION=158fe569f61a491198501162805be4cd0c843da0 make build
+          sha256sum bin/garm bin/garm-cli
+
   update:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -43,17 +92,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          PATCH_SOURCE_SHA="$(git rev-parse HEAD)"
           cp -r cifast/patches "$RUNNER_TEMP/patches"
+          (
+            cd "$RUNNER_TEMP/patches"
+            while IFS= read -r patch; do
+              [ -n "$patch" ] || continue
+              sha256sum "$patch"
+            done < series
+          ) > "$RUNNER_TEMP/PATCH_SHA256SUMS"
+          echo "patch_source_sha=$PATCH_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           git remote add upstream https://github.com/cloudbase/garm.git
-          git fetch upstream --tags --quiet
-          UPSTREAM_SHA="$(git rev-parse "upstream/${REF}")"
+          git fetch --no-tags --quiet -- upstream "$REF"
+          UPSTREAM_SHA="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
           SHA8="${UPSTREAM_SHA:0:8}"
           echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
           echo "sha8=$SHA8" >> "$GITHUB_OUTPUT"
-          echo "branch=update/$SHA8" >> "$GITHUB_OUTPUT"
-          git config user.name "cifast-upstream-update"
-          git config user.email "cifast-upstream-update@cccc.local"
-          git checkout -B "update/$SHA8" "$UPSTREAM_SHA"
+          BRANCH="update/$SHA8-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git config user.name "Chriscoveries"
+          git config user.email "chriscoveries@users.noreply.github.com"
+          git checkout -b "$BRANCH" "$UPSTREAM_SHA"
           KEPT=() ; DROPPED=()
           while read -r patch; do
             [ -n "$patch" ] || continue
@@ -69,30 +128,38 @@ jobs:
               git status --short | grep -E '^(UU|AA|DU|UD)' || true
               exit 1
             fi
-            git -c user.name="cifast-upstream-update" \
-                -c user.email="cifast-upstream-update@cccc.local" \
-                commit -qm "cifast patch: $patch"
+            git commit -qm "cifast patch: $patch"
             KEPT+=("$patch")
           done < "$RUNNER_TEMP/patches/series"
           echo "kept=$(printf '%s ' "${KEPT[@]:-}")" >> "$GITHUB_OUTPUT"
           echo "dropped=$(printf '%s ' "${DROPPED[@]:-}")" >> "$GITHUB_OUTPUT"
+          echo "applied_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "applied_tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
       - name: Test and build
         env:
           UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libbtrfs-dev build-essential apg jq
           # upstream's own targets: go-test = go test -race -mod=vendor -tags
           # testing ./...; build = vendored go build with version ldflags.
           make go-test TEST_ARGS="-parallel=4"
           VERSION="$UPSTREAM_SHA" make build
           mkdir -p out
           cp bin/garm bin/garm-cli out/
+          cp "$RUNNER_TEMP/PATCH_SHA256SUMS" out/PATCH_SHA256SUMS
           (cd out && sha256sum garm garm-cli | tee SHA256SUMS)
       - name: Manifest
         id: manifest
         env:
           UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
-          RUNNING_SHA: def04d0a901134d9f8ec76d959b1b6473c3ce4ef
+          RUNNING_SHA: 158fe569f61a491198501162805be4cd0c843da0
+          PATCH_SOURCE_SHA: ${{ steps.rebase.outputs.patch_source_sha }}
+          APPLIED_SHA: ${{ steps.rebase.outputs.applied_sha }}
+          APPLIED_TREE: ${{ steps.rebase.outputs.applied_tree }}
+          KEPT_PATCHES: ${{ steps.rebase.outputs.kept }}
+          DROPPED_PATCHES: ${{ steps.rebase.outputs.dropped }}
         run: |
           set -euo pipefail
           BIN_SHA="$(grep ' garm$' out/SHA256SUMS | cut -d' ' -f1)"
@@ -107,10 +174,14 @@ jobs:
             | grep -E '^[+-].*(=|" *[A-Za-z_]+ *:)' > /tmp/config-delta.txt || true
           IFACE="$(grep -rn 'InterfaceVersion' runner/providers/external/*.go 2>/dev/null | head -3 || true)"
           jq -n --arg upstream "$UPSTREAM_SHA" --arg running "$RUNNING_SHA" \
-                --arg kept "${{ steps.rebase.outputs.kept }}" --arg dropped "${{ steps.rebase.outputs.dropped }}" \
+                --arg patch_source "$PATCH_SOURCE_SHA" --arg applied "$APPLIED_SHA" --arg tree "$APPLIED_TREE" \
+                --rawfile patch_hashes out/PATCH_SHA256SUMS \
+                --arg kept "$KEPT_PATCHES" --arg dropped "$DROPPED_PATCHES" \
                 --arg binsha "$BIN_SHA" --arg clisha "$CLI_SHA" --arg iface "$IFACE" \
                 --slurpfile mig /tmp/migrations.json \
             '{upstream_sha: $upstream, running_sha: $running,
+              patch_source_sha: $patch_source, applied_sha: $applied, applied_tree: $tree,
+              patch_sha256: ($patch_hashes|split("\n")|map(select(length>0)|split("  ")|{file:.[1],sha256:.[0]})),
               patches: {kept: ($kept|split(" ")|map(select(.!=""))),
                         dropped: ($dropped|split(" ")|map(select(.!="")))},
               db_migration_files: $mig[0],
@@ -125,39 +196,35 @@ jobs:
           SHA8: ${{ steps.rebase.outputs.sha8 }}
           UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
           BIN_SHA: ${{ steps.manifest.outputs.bin_sha }}
+          PATCH_SOURCE_SHA: ${{ steps.rebase.outputs.patch_source_sha }}
         run: |
           set -euo pipefail
-          TAG="upstream-$SHA8-$(date -u +%Y%m%d)"
+          TAG="upstream-$SHA8-$(date -u +%Y%m%d)-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # Release first: the binary is the product. GITHUB_TOKEN may refuse
           # a push that touches .github/workflows (upstream's own changes ride
           # in update/SHA8), and a refused push must still leave the release.
-          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
-            gh release upload "$TAG" --clobber --repo ${{ github.repository }} \
-              out/garm out/garm-cli out/SHA256SUMS out/manifest.json out/config-delta.txt
-          else
-            gh release create "$TAG" --prerelease \
+          gh release create "$TAG" --prerelease --target "$PATCH_SOURCE_SHA" \
               --title "upstream $SHA8 + cifast patches" \
               --notes "Rebase of cifast/patches onto cloudbase/garm $UPSTREAM_SHA. See manifest.json." \
-              --repo ${{ github.repository }} \
-              out/garm out/garm-cli out/SHA256SUMS out/manifest.json out/config-delta.txt
-          fi
+              --repo "$GITHUB_REPOSITORY" \
+              out/garm out/garm-cli out/SHA256SUMS out/PATCH_SHA256SUMS out/manifest.json out/config-delta.txt
           gh auth setup-git
-          if ! git push origin "$BRANCH" --force-with-lease; then
+          if ! git push origin "$BRANCH"; then
             echo "push of $BRANCH refused (workflow-touching commits); release $TAG is published, skipping the update PR"
             exit 0
           fi
           printf 'Upstream %s rebase (run %s).\n\n' "$UPSTREAM_SHA" "$GITHUB_RUN_ID" > /tmp/pr-body.txt
           cat out/manifest.json >> /tmp/pr-body.txt
-          EXISTING="$(gh pr list --repo ${{ github.repository }} --head "$BRANCH" --json number --jq '.[0].number // empty' || true)"
+          EXISTING="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --json number --jq '.[0].number // empty' || true)"
           if [ -n "$EXISTING" ]; then
-            gh pr edit "$EXISTING" --repo ${{ github.repository }} \
+            gh pr edit "$EXISTING" --repo "$GITHUB_REPOSITORY" \
               --body-file /tmp/pr-body.txt
-          elif ! gh pr create --repo ${{ github.repository }} --base main --head "$BRANCH" \
+          elif ! gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
               --title "Update to upstream $SHA8 + cifast patches" \
               --body-file /tmp/pr-body.txt; then
             # The org may bar Actions from opening PRs; the release still
             # stands and the branch is pushed — a human opens it.
             echo "gh pr create refused; open the update PR by hand:"
-            echo "https://github.com/${{ github.repository }}/compare/main...$BRANCH?expand=1"
+            echo "https://github.com/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
             exit 0
           fi
