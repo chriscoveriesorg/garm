@@ -1,3 +1,4 @@
 0002-skip-disabled-scale-sets-in-retry.patch
 0003-macos-ostype.patch
 0004-macos-admission.patch
+0005-disable-linux-install-wrapper-tracing.patch

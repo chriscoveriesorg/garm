@@ -1,0 +1,34 @@
+diff --git a/internal/templates/templates_test.go b/internal/templates/templates_test.go
+index e8fad8dfac8745711174faedd576e73b6dd13167..d877558ca420f75d50e8c135eb99adf0e9f91299 100644
+--- a/internal/templates/templates_test.go
++++ b/internal/templates/templates_test.go
+@@ -73,6 +73,17 @@ func TestWrapperRendersProxySettings(t *testing.T) {
+ 	}
+ }
+ 
++func TestLinuxInstallWrapperStartsWithoutTracing(t *testing.T) {
++	rendered, err := RenderRunnerInstallWrapper(context.Background(), commonParams.Linux, "", "", "", commonParams.ProxyConfig{})
++	if err != nil {
++		t.Fatalf("failed to render Linux wrapper: %v", err)
++	}
++	const startup = "#!/bin/bash\n\nset -e\nset -o pipefail\n\nCALLBACK_URL="
++	if !strings.HasPrefix(string(rendered), startup) {
++		t.Fatal("expected Linux wrapper error handling without tracing before credentials")
++	}
++}
++
+ // TestWindowsInstallTemplatesHaveProxyPreamble checks that the windows
+ // install scripts configure the .NET default web proxy from the proxy
+ // environment variables inherited from the wrapper. PowerShell 5.1 does not
+diff --git a/internal/templates/userdata/linux_wrapper.tmpl b/internal/templates/userdata/linux_wrapper.tmpl
+index d0400e39106468f3bdd0ec1855fbb1d42b42cc3c..658dec214566623a4e72aa6297822c21c0668e8e 100644
+--- a/internal/templates/userdata/linux_wrapper.tmpl
++++ b/internal/templates/userdata/linux_wrapper.tmpl
+@@ -1,6 +1,6 @@
+ #!/bin/bash
+ 
+-set -ex
++set -e
+ set -o pipefail
+ 
+ CALLBACK_URL="{{ .CallbackURL }}"
