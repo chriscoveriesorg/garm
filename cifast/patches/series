@@ -2,3 +2,4 @@
 0003-macos-ostype.patch
 0004-macos-admission.patch
 0005-disable-linux-install-wrapper-tracing.patch
+0006-scaleset-usable-runner-count.patch
