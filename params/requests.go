@@ -995,7 +995,7 @@ func (c *CreateTemplateParams) Validate() error {
 	}
 
 	switch c.OSType {
-	case commonParams.Linux, commonParams.Windows:
+	case commonParams.Linux, commonParams.Windows, commonParams.MacOS:
 	default:
 		return fmt.Errorf("invalid OS type: %q", c.OSType)
 	}

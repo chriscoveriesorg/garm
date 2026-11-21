@@ -29,6 +29,7 @@ var (
 	supportedOSType map[params.OSType]struct{} = map[params.OSType]struct{}{
 		params.Linux:   {},
 		params.Windows: {},
+		params.MacOS:   {},
 	}
 
 	// These are the architectures that Github supports.
