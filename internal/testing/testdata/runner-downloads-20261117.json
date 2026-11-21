@@ -1,0 +1,44 @@
+[
+  {
+    "os": "osx",
+    "architecture": "x64",
+    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-osx-x64-2.338.2.tar.gz",
+    "filename": "actions-runner-osx-x64-2.338.2.tar.gz"
+  },
+  {
+    "os": "linux",
+    "architecture": "x64",
+    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz",
+    "filename": "actions-runner-linux-x64-2.338.2.tar.gz"
+  },
+  {
+    "os": "linux",
+    "architecture": "arm",
+    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-arm-2.338.2.tar.gz",
+    "filename": "actions-runner-linux-arm-2.338.2.tar.gz"
+  },
+  {
+    "os": "win",
+    "architecture": "x64",
+    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-win-x64-2.338.2.zip",
+    "filename": "actions-runner-win-x64-2.338.2.zip"
+  },
+  {
+    "os": "linux",
+    "architecture": "arm64",
+    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-arm64-2.338.2.tar.gz",
+    "filename": "actions-runner-linux-arm64-2.338.2.tar.gz"
+  },
+  {
+    "os": "osx",
+    "architecture": "arm64",
+    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-osx-arm64-2.338.2.tar.gz",
+    "filename": "actions-runner-osx-arm64-2.338.2.tar.gz"
+  },
+  {
+    "os": "win",
+    "architecture": "arm64",
+    "download_url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-win-arm64-2.338.2.zip",
+    "filename": "actions-runner-win-arm64-2.338.2.zip"
+  }
+]
