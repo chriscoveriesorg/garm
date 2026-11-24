@@ -48,7 +48,7 @@ var templatesCmd = &cobra.Command{
 	Short:        "Manage templates",
 	Long: `Manage runner install templates.
 
-The commands in this group enable you to manage github and gitea runner install templates for both Linux and Windows.
+The commands in this group manage Linux/Windows install templates and GitHub macos admission-only templates.
 Templates are a convenience feature that allows providers to point the userdata of the new runner to an URL in GARM
 which will serve an OS specific script (catered to the runner type) that will set up the runner software on a new
 generic machine.
@@ -80,9 +80,13 @@ var templateCreateCmd = &cobra.Command{
 
 		osType := commonParams.OSType(templateOSType)
 		switch osType {
-		case commonParams.Linux, commonParams.Windows:
+		case commonParams.Linux, commonParams.Windows, commonParams.MacOS:
 		default:
-			return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(params.GithubEndpointType), string(params.GiteaEndpointType)}, ", "))
+			return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(commonParams.Linux), string(commonParams.Windows), string(commonParams.MacOS)}, ", "))
+		}
+
+		if osType == commonParams.MacOS && forge != params.GithubEndpointType {
+			return fmt.Errorf("macos admission templates require the github forge")
 		}
 
 		if templatePath == "" {
@@ -394,9 +398,13 @@ restore only a specific template. When either flag is specified, both must be pr
 
 			osType := commonParams.OSType(templateOSType)
 			switch osType {
-			case commonParams.Linux, commonParams.Windows:
+			case commonParams.Linux, commonParams.Windows, commonParams.MacOS:
 			default:
-				return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(commonParams.Linux), string(commonParams.Windows)}, ", "))
+				return fmt.Errorf("invalid OS type: %q (supported: %s)", osType, strings.Join([]string{string(commonParams.Linux), string(commonParams.Windows), string(commonParams.MacOS)}, ", "))
+			}
+
+			if osType == commonParams.MacOS && forge != params.GithubEndpointType {
+				return fmt.Errorf("macos admission templates require the github forge")
 			}
 
 			restoreReq.Body.Forge = forge

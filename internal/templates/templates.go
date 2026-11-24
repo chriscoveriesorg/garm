@@ -71,6 +71,10 @@ func GetTemplateContent(osType commonParams.OSType, forge params.EndpointType) (
 	case params.GithubEndpointType, params.GiteaEndpointType:
 		switch osType {
 		case commonParams.Linux, commonParams.Windows:
+		case commonParams.MacOS:
+			if forge != params.GithubEndpointType {
+				return nil, runnerErrors.NewNotFoundError("macos admission templates require the github forge")
+			}
 		default:
 			return nil, runnerErrors.NewNotFoundError("could not find template for forge %s and OS type: %q", forge, osType)
 		}

@@ -193,10 +193,11 @@ func OSToOSType(os string) (params.OSType, error) {
 }
 
 func GetTools(osType params.OSType, osArch params.OSArch, tools []params.RunnerApplicationDownload) (params.RunnerApplicationDownload, error) {
-	// Validate image OS. Linux only for now.
+	// Validate the runner platform before selecting the GitHub tool.
 	switch osType {
 	case params.Linux:
 	case params.Windows:
+	case params.MacOS:
 	default:
 		return params.RunnerApplicationDownload{}, fmt.Errorf("unsupported OS type: %s", osType)
 	}
