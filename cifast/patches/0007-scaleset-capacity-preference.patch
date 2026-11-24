@@ -43,10 +43,10 @@ index d5d6a535..a6e1010b 100644
  	// MetadataURL is the URL where instances can fetch information they may need
 diff --git a/config/scaleset_preferences.go b/config/scaleset_preferences.go
 new file mode 100644
-index 00000000..30f60dc1
+index 00000000..a7616322
 --- /dev/null
 +++ b/config/scaleset_preferences.go
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,75 @@
 +// Copyright 2025 Cloudbase Solutions SRL
 +//
 +//	Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -76,6 +76,8 @@ index 00000000..30f60dc1
 +	ID       uint   `json:"id"`
 +	Name     string `json:"name"`
 +	Priority uint   `json:"priority"`
++	// LabelRoutedOnly attests that no workflow selects this set by name.
++	LabelRoutedOnly bool `json:"label_routed_only"`
 +}
 +
 +// ReadScaleSetPreferences reads the controller's optional, Cifast-owned
@@ -276,10 +278,10 @@ index 601b31cd..607a8303 100644
  	}
 diff --git a/workers/scaleset/capacity.go b/workers/scaleset/capacity.go
 new file mode 100644
-index 00000000..6da066e7
+index 00000000..b5983304
 --- /dev/null
 +++ b/workers/scaleset/capacity.go
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,224 @@
 +// Copyright 2025 Cloudbase Solutions SRL
 +//
 +//	Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -427,7 +429,11 @@ index 00000000..6da066e7
 +}
 +
 +func (p *capacityPolicy) advertisement(id uint, name string, maximum uint) (uint, <-chan struct{}) {
-+	if !p.configured(id) || p.preferences[id].Name != name {
++	if !p.configured(id) {
++		return maximum, nil
++	}
++	preference := p.preferences[id]
++	if preference.Name != name || !preference.LabelRoutedOnly {
 +		return maximum, nil
 +	}
 +	p.mu.Lock()
@@ -444,7 +450,7 @@ index 00000000..6da066e7
 +	for preferredID, preferred := range p.sets {
 +		rank := p.preferences[preferredID]
 +		if !preferred.enabled || rank.Name != preferred.name ||
-+			rank.Priority >= p.preferences[id].Priority ||
++			rank.Priority >= preference.Priority ||
 +			preferred.group != mine.group || !coversTags(preferred.tags, mine.tags) {
 +			continue
 +		}
@@ -502,10 +508,10 @@ index 00000000..6da066e7
 +}
 diff --git a/workers/scaleset/capacity_test.go b/workers/scaleset/capacity_test.go
 new file mode 100644
-index 00000000..56f3c8f3
+index 00000000..b6eac9d6
 --- /dev/null
 +++ b/workers/scaleset/capacity_test.go
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,176 @@
 +// Copyright 2025 Cloudbase Solutions SRL
 +//
 +//	Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -553,8 +559,8 @@ index 00000000..56f3c8f3
 +	preferred, second, overflow := preferenceSets()
 +	p := newCapacityPolicy(map[uint]config.ScaleSetPreference{
 +		26: {ID: 26, Name: "webclip-org", Priority: 1},
-+		25: {ID: 25, Name: "claw-org", Priority: 2},
-+		33: {ID: 33, Name: "ci7550-shared", Priority: 3},
++		25: {ID: 25, Name: "claw-org", Priority: 2, LabelRoutedOnly: true},
++		33: {ID: 33, Name: "ci7550-shared", Priority: 3, LabelRoutedOnly: true},
 +	})
 +	for _, set := range []params.ScaleSet{preferred, second, overflow} {
 +		p.update(set)
@@ -604,7 +610,7 @@ index 00000000..56f3c8f3
 +	preferred, _, overflow := preferenceSets()
 +	p := newCapacityPolicy(map[uint]config.ScaleSetPreference{
 +		26: {ID: 26, Name: "webclip-org", Priority: 1},
-+		33: {ID: 33, Name: "ci7550-shared", Priority: 3},
++		33: {ID: 33, Name: "ci7550-shared", Priority: 3, LabelRoutedOnly: true},
 +	})
 +	p.update(overflow)
 +	p.observe(overflow.ID, assigned(0))
@@ -626,11 +632,26 @@ index 00000000..56f3c8f3
 +	check(1)
 +}
 +
-+func TestCapacityChangeEndsOnlyTheCurrentPoll(t *testing.T) {
++func TestCapacityKeepsNameRoutedSetsOpen(t *testing.T) {
 +	preferred, _, overflow := preferenceSets()
 +	p := newCapacityPolicy(map[uint]config.ScaleSetPreference{
 +		26: {ID: 26, Name: "webclip-org", Priority: 1},
 +		33: {ID: 33, Name: "ci7550-shared", Priority: 3},
++	})
++	p.update(preferred)
++	p.update(overflow)
++	p.observe(preferred.ID, assigned(0))
++	p.observe(overflow.ID, assigned(0))
++	if limit, changes := p.advertisement(overflow.ID, overflow.Name, overflow.MaxRunners); limit != 1 || changes != nil {
++		t.Fatalf("set without a label-only attestation advertised %d", limit)
++	}
++}
++
++func TestCapacityChangeEndsOnlyTheCurrentPoll(t *testing.T) {
++	preferred, _, overflow := preferenceSets()
++	p := newCapacityPolicy(map[uint]config.ScaleSetPreference{
++		26: {ID: 26, Name: "webclip-org", Priority: 1},
++		33: {ID: 33, Name: "ci7550-shared", Priority: 3, LabelRoutedOnly: true},
 +	})
 +	p.update(preferred)
 +	p.update(overflow)

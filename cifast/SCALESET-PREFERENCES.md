@@ -10,7 +10,7 @@ For the first window, configure these two rows.
 ```json
 {"scale_sets":[
   {"id":26,"name":"webclip-org","priority":1},
-  {"id":33,"name":"ci7550-shared","priority":3}
+  {"id":33,"name":"ci7550-shared","priority":3,"label_routed_only":true}
 ]}
 ```
 
@@ -18,7 +18,9 @@ After the canary, Claw can cover ci7550 with priority 2. Claw also has
 `avx512`, `claw` and `claw-rust`, so Webclip cannot suppress it. MacDad
 uses separate labels. Priority applies only within a forge entity and runner
 group. The preferred enabled set must contain every overflow label. Both
-database ID and name must match.
+database ID and name must match. Only rows with `label_routed_only: true`
+can be suppressed. GARM adds the set name as a label, so record the workflow
+name-routing check before attesting that an overflow set has no such consumers.
 
 GitHub receives an absolute maximum. When a preferred listener has room,
 the overflow listener advertises its own broker-reported assigned count.
