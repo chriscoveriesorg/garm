@@ -73,6 +73,17 @@ func TestWrapperRendersProxySettings(t *testing.T) {
 	}
 }
 
+func TestLinuxInstallWrapperStartsWithoutTracing(t *testing.T) {
+	rendered, err := RenderRunnerInstallWrapper(context.Background(), commonParams.Linux, "", "", "", commonParams.ProxyConfig{})
+	if err != nil {
+		t.Fatalf("failed to render Linux wrapper: %v", err)
+	}
+	const startup = "#!/bin/bash\n\nset -e\nset -o pipefail\n\nCALLBACK_URL="
+	if !strings.HasPrefix(string(rendered), startup) {
+		t.Fatal("expected Linux wrapper error handling without tracing before credentials")
+	}
+}
+
 // TestWindowsInstallTemplatesHaveProxyPreamble checks that the windows
 // install scripts configure the .NET default web proxy from the proxy
 // environment variables inherited from the wrapper. PowerShell 5.1 does not
