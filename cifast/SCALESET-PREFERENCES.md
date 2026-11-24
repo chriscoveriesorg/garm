@@ -14,10 +14,11 @@ For the first window, configure these two rows.
 ]}
 ```
 
-To widen the preference after the canary, add
-`{"id":25,"name":"claw-org","priority":2}`. MacDad uses separate labels.
-Priority applies only within a forge entity and runner group, to enabled
-sets with identical nonempty labels. Both the database ID and name must match.
+After the canary, Claw can cover ci7550 with priority 2. Claw also has
+`avx512`, `claw` and `claw-rust`, so Webclip cannot suppress it. MacDad
+uses separate labels. Priority applies only within a forge entity and runner
+group. The preferred enabled set must contain every overflow label. Both
+database ID and name must match.
 
 GitHub receives an absolute maximum. When a preferred listener has room,
 the overflow listener advertises its own broker-reported assigned count.

@@ -43,7 +43,7 @@ index d5d6a535..a6e1010b 100644
  	// MetadataURL is the URL where instances can fetch information they may need
 diff --git a/config/scaleset_preferences.go b/config/scaleset_preferences.go
 new file mode 100644
-index 00000000..237e2239
+index 00000000..30f60dc1
 --- /dev/null
 +++ b/config/scaleset_preferences.go
 @@ -0,0 +1,73 @@
@@ -71,7 +71,7 @@ index 00000000..237e2239
 +)
 +
 +// ScaleSetPreference identifies a database row and ranks it within sets that
-+// share the same labels and GitHub runner group. Smaller numbers come first.
++// share a GitHub runner group. Smaller numbers come first.
 +type ScaleSetPreference struct {
 +	ID       uint   `json:"id"`
 +	Name     string `json:"name"`
@@ -276,10 +276,10 @@ index 601b31cd..607a8303 100644
  	}
 diff --git a/workers/scaleset/capacity.go b/workers/scaleset/capacity.go
 new file mode 100644
-index 00000000..d154f280
+index 00000000..6da066e7
 --- /dev/null
 +++ b/workers/scaleset/capacity.go
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,220 @@
 +// Copyright 2025 Cloudbase Solutions SRL
 +//
 +//	Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -415,6 +415,17 @@ index 00000000..d154f280
 +	}
 +}
 +
++// coversTags requires every overflow label to be available on the preferred
++// set. Additional preferred labels do not make any overflow job ineligible.
++func coversTags(preferred, overflow []string) bool {
++	for _, tag := range overflow {
++		if _, found := slices.BinarySearch(preferred, tag); !found {
++			return false
++		}
++	}
++	return true
++}
++
 +func (p *capacityPolicy) advertisement(id uint, name string, maximum uint) (uint, <-chan struct{}) {
 +	if !p.configured(id) || p.preferences[id].Name != name {
 +		return maximum, nil
@@ -434,7 +445,7 @@ index 00000000..d154f280
 +		rank := p.preferences[preferredID]
 +		if !preferred.enabled || rank.Name != preferred.name ||
 +			rank.Priority >= p.preferences[id].Priority ||
-+			preferred.group != mine.group || !slices.Equal(preferred.tags, mine.tags) {
++			preferred.group != mine.group || !coversTags(preferred.tags, mine.tags) {
 +			continue
 +		}
 +		if preferred.assigned == unknownAssigned {
@@ -491,10 +502,10 @@ index 00000000..d154f280
 +}
 diff --git a/workers/scaleset/capacity_test.go b/workers/scaleset/capacity_test.go
 new file mode 100644
-index 00000000..dc480311
+index 00000000..56f3c8f3
 --- /dev/null
 +++ b/workers/scaleset/capacity_test.go
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,161 @@
 +// Copyright 2025 Cloudbase Solutions SRL
 +//
 +//	Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -526,9 +537,11 @@ index 00000000..dc480311
 +	for _, name := range labels {
 +		tags = append(tags, params.Tag{Name: name})
 +	}
-+	// Use the deployed names, IDs, max_runners and shared routing labels.
++	clawTags := append(tags[:len(tags):len(tags)],
++		params.Tag{Name: "avx512"}, params.Tag{Name: "claw"}, params.Tag{Name: "claw-rust"})
++	// These names, IDs, maxima and labels come from the 23 Nov controller census.
 +	return params.ScaleSet{ID: 26, Name: "webclip-org", Enabled: true, MaxRunners: 2, Tags: tags},
-+		params.ScaleSet{ID: 25, Name: "claw-org", Enabled: true, MaxRunners: 2, Tags: tags},
++		params.ScaleSet{ID: 25, Name: "claw-org", Enabled: true, MaxRunners: 2, Tags: clawTags},
 +		params.ScaleSet{ID: 33, Name: "ci7550-shared", Enabled: true, MaxRunners: 1, Tags: tags}
 +}
 +
@@ -560,8 +573,8 @@ index 00000000..dc480311
 +	check(overflow, 1) // The second eligible set is still unknown.
 +	p.observe(second.ID, assigned(1))
 +	check(preferred, 2)
-+	check(second, 1)   // Keeps the job already assigned.
-+	check(overflow, 0) // Idle overflow is frozen only with capacity above it.
++	check(second, 2)   // Webclip cannot run all Claw jobs.
++	check(overflow, 0) // Idle overflow is frozen only with covered labels above it.
 +	p.observe(overflow.ID, assigned(1))
 +	check(overflow, 1)
 +	p.observe(overflow.ID, assigned(0))
