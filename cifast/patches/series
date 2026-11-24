@@ -3,3 +3,4 @@
 0004-macos-admission.patch
 0005-disable-linux-install-wrapper-tracing.patch
 0006-scaleset-usable-runner-count.patch
+0007-scaleset-capacity-preference.patch
