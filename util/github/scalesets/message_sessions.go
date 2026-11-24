@@ -64,6 +64,13 @@ func (m *MessageSession) MessageQueueAccessToken() string {
 	return m.session.MessageQueueAccessToken
 }
 
+// InitialStatistics is the assigned-count snapshot returned at session creation.
+func (m *MessageSession) InitialStatistics() *params.RunnerScaleSetStatistic {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	return m.session.Statistics
+}
+
 func (m *MessageSession) LastError() error {
 	return m.lastErr
 }
@@ -169,7 +176,7 @@ func (m *MessageSession) maybeRefreshToken(ctx context.Context) error {
 func (m *MessageSession) GetMessage(ctx context.Context, lastMessageID int64, maxCapacity uint) (_ params.RunnerScaleSetMessage, err error) {
 	m.ssCli.recordOperation("GetMessage")
 	defer func() {
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			m.ssCli.recordFailedOperation("GetMessage")
 		}
 	}()

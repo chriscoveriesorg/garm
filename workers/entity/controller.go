@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/cloudbase/garm/auth"
+	"github.com/cloudbase/garm/config"
 	dbCommon "github.com/cloudbase/garm/database/common"
 	"github.com/cloudbase/garm/database/watcher"
 	"github.com/cloudbase/garm/params"
@@ -31,7 +32,7 @@ import (
 
 const retryLoopInterval = 5 * time.Second
 
-func NewController(ctx context.Context, store dbCommon.Store, providers map[string]common.Provider) (*Controller, error) {
+func NewController(ctx context.Context, store dbCommon.Store, providers map[string]common.Provider, preferences map[uint]config.ScaleSetPreference) (*Controller, error) {
 	consumerID := "entity-controller"
 	ctx = garmUtil.WithSlogContext(
 		ctx,
@@ -39,11 +40,12 @@ func NewController(ctx context.Context, store dbCommon.Store, providers map[stri
 	ctx = auth.GetAdminContext(ctx)
 
 	return &Controller{
-		consumerID: consumerID,
-		ctx:        ctx,
-		store:      store,
-		providers:  providers,
-		backoff:    workersCommon.NewBackoff(workersCommon.DefaultBackoffConfig()),
+		consumerID:  consumerID,
+		ctx:         ctx,
+		store:       store,
+		providers:   providers,
+		preferences: preferences,
+		backoff:     workersCommon.NewBackoff(workersCommon.DefaultBackoffConfig()),
 	}, nil
 }
 
@@ -54,7 +56,8 @@ type Controller struct {
 	consumer dbCommon.Consumer
 	store    dbCommon.Store
 
-	providers map[string]common.Provider
+	providers   map[string]common.Provider
+	preferences map[uint]config.ScaleSetPreference
 	// sync.Map[string]*Worker
 	Entities sync.Map
 
@@ -121,7 +124,7 @@ func (c *Controller) loadAllEnterprises() {
 // storeEntityWorker creates a worker for the entity and stores it.
 // The retry loop will start it.
 func (c *Controller) storeEntityWorker(entity params.ForgeEntity) {
-	worker, err := NewWorker(c.ctx, c.store, entity, c.providers)
+	worker, err := NewWorker(c.ctx, c.store, entity, c.providers, c.preferences)
 	if err != nil {
 		slog.ErrorContext(c.ctx, "creating worker", "entity_id", entity.ID, "error", err)
 		return

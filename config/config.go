@@ -225,6 +225,9 @@ func (l *Logging) Validate() error {
 }
 
 type Default struct {
+	// ScaleSetPreferenceFile is optional. Missing or invalid preferences leave ordinary advertisements in place.
+	ScaleSetPreferenceFile string `toml:"scale_set_preference_file,omitempty" json:"scale-set-preference-file,omitempty"`
+
 	// CallbackURL is the URL where the instances can send back status reports.
 	CallbackURL string `toml:"callback_url" json:"callback-url"`
 	// MetadataURL is the URL where instances can fetch information they may need

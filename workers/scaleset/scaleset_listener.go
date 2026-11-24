@@ -36,7 +36,7 @@ var closed = make(chan struct{})
 
 func init() { close(closed) }
 
-func newListener(ctx context.Context, scaleSetHelper scaleSetHelper) *scaleSetListener {
+func newListener(ctx context.Context, scaleSetHelper scaleSetHelper, capacity *capacityPolicy) *scaleSetListener {
 	ctx = garmUtil.WithSlogContext(
 		ctx,
 		slog.Any("sub_worker", "scaleset-listener"),
@@ -44,6 +44,7 @@ func newListener(ctx context.Context, scaleSetHelper scaleSetHelper) *scaleSetLi
 	return &scaleSetListener{
 		ctx:            ctx,
 		scaleSetHelper: scaleSetHelper,
+		capacity:       capacity,
 		lastMessageID:  scaleSetHelper.GetScaleSet().LastMessageID,
 	}
 }
@@ -61,6 +62,7 @@ type scaleSetListener struct {
 	lastMessageID int64
 
 	scaleSetHelper scaleSetHelper
+	capacity       *capacityPolicy
 	messageSession *scalesets.MessageSession
 
 	mux        sync.Mutex
@@ -105,6 +107,7 @@ func (l *scaleSetListener) Start() error {
 	l.messageSession = session
 	l.quit = make(chan struct{})
 	l.running.Store(true)
+	l.capacity.observe(scaleSet.ID, session.InitialStatistics())
 	l.loopExited = make(chan struct{})
 	go l.loop()
 
@@ -121,6 +124,7 @@ func (l *scaleSetListener) Stop() error {
 	// Stop the long poll and token refresh before attempting remote cleanup.
 	// In particular, Close can otherwise wait for an in-flight refresh.
 	l.cancelFunc()
+	l.capacity.observe(l.scaleSetHelper.GetScaleSet().ID, nil)
 	if l.messageSession != nil {
 		slog.DebugContext(l.ctx, "closing message session", "scale_set", l.scaleSetHelper.GetScaleSet().ScaleSetID)
 		if err := l.messageSession.Close(); err != nil {
@@ -253,8 +257,10 @@ func (l *scaleSetListener) handleSessionMessage(msg params.RunnerScaleSetMessage
 		l.lastMessageID = msg.MessageID
 	}
 
-	if err := l.scaleSetHelper.SetDesiredRunnerCount(msg.Statistics.TotalAssignedJobs); err != nil {
-		slog.ErrorContext(l.ctx, "setting desired runner count", "error", err)
+	if msg.Statistics != nil && msg.Statistics.TotalAssignedJobs >= 0 {
+		if err := l.scaleSetHelper.SetDesiredRunnerCount(msg.Statistics.TotalAssignedJobs); err != nil {
+			slog.ErrorContext(l.ctx, "setting desired runner count", "error", err)
+		}
 	}
 
 	if err := l.messageSession.DeleteMessage(l.listenerCtx, msg.MessageID); err != nil {
@@ -262,10 +268,21 @@ func (l *scaleSetListener) handleSessionMessage(msg params.RunnerScaleSetMessage
 	}
 }
 
+func (l *scaleSetListener) observeCapacity(id uint, stats *params.RunnerScaleSetStatistic) {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+	if l.running.Load() {
+		l.capacity.observe(id, stats)
+	}
+}
+
 func (l *scaleSetListener) loop() {
 	defer close(l.loopExited)
 	defer l.Stop()
 	retryAfterUnauthorized := false
+	suppressionAllowed := true
+	var advertised uint
+	hasAdvertisement := false
 
 	slog.DebugContext(l.ctx, "starting scale set listener loop", "scale_set", l.scaleSetHelper.GetScaleSet().ScaleSetID)
 	for {
@@ -279,13 +296,34 @@ func (l *scaleSetListener) loop() {
 			slog.DebugContext(l.ctx, "scaleset worker has stopped")
 			return
 		default:
-			slog.DebugContext(l.ctx, "getting message", "last_message_id", l.lastMessageID, "max_runners", l.scaleSetHelper.GetScaleSet().MaxRunners)
-			// Each poll attempt is bounded by the long poll client's own
-			// timeout, sized for the broker's ~50s hold; the context only
-			// needs to carry cancellation.
-			msg, err := l.messageSession.GetMessage(
-				l.listenerCtx, l.lastMessageID, l.scaleSetHelper.GetScaleSet().MaxRunners)
+			set := l.scaleSetHelper.GetScaleSet()
+			advertisement := func() (uint, <-chan struct{}) {
+				if !suppressionAllowed {
+					return set.MaxRunners, nil
+				}
+				return l.capacity.advertisement(set.ID, set.Name, set.MaxRunners)
+			}
+			msg, limit, err := pollWithCapacity(l.listenerCtx, advertisement,
+				func(ctx context.Context, capacity uint) (params.RunnerScaleSetMessage, error) {
+					if l.capacity.configured(set.ID) && (!hasAdvertisement || capacity != advertised) {
+						slog.InfoContext(l.ctx, "scale set advertised capacity changed",
+							"scale_set_db_id", set.ID, "advertised_capacity", capacity, "max_runners", set.MaxRunners)
+						advertised, hasAdvertisement = capacity, true
+					}
+					slog.DebugContext(l.ctx, "getting message", "last_message_id", l.lastMessageID, "advertised_capacity", capacity)
+					return l.messageSession.GetMessage(ctx, l.lastMessageID, capacity)
+				},
+			)
+			if errors.Is(err, errCapacityChanged) {
+				continue
+			}
 			if err != nil {
+				l.observeCapacity(set.ID, nil)
+				if limit < set.MaxRunners && !errors.Is(err, context.Canceled) && !errors.Is(err, runnerErrors.ErrUnauthorized) {
+					suppressionAllowed = false
+					slog.WarnContext(l.ctx, "reduced capacity poll failed, restoring maximum for this session", "error", err)
+					continue
+				}
 				if errors.Is(err, runnerErrors.ErrUnauthorized) {
 					if retryAfterUnauthorized {
 						slog.DebugContext(l.ctx, "unauthorized, stopping listener")
@@ -312,6 +350,7 @@ func (l *scaleSetListener) loop() {
 			// the long poll for ~50s before returning a nil message.
 			metrics.ScaleSetListenerLastSuccess.WithLabelValues(l.scaleSetIDLabel()).SetToCurrentTime()
 			if !msg.IsNil() {
+				l.observeCapacity(set.ID, msg.Statistics)
 				// Longpoll returns after 50 seconds. If no message arrives during that interval
 				// we get a nil message. We can simply ignore it and continue.
 				slog.DebugContext(l.ctx, "handling message", "message_id", msg.MessageID)

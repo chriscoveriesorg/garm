@@ -98,6 +98,7 @@ type Worker struct {
 	eventQueue *workersCommon.UnboundedChan[dbCommon.ChangePayload]
 
 	listener *scaleSetListener
+	capacity *capacityPolicy
 
 	mux     sync.Mutex
 	running bool
@@ -364,7 +365,7 @@ func (w *Worker) Start() (err error) {
 	}()
 
 	slog.DebugContext(w.ctx, "creating scale set listener")
-	listener := newListener(w.ctx, w)
+	listener := newListener(w.ctx, w, w.capacity)
 
 	w.listener = listener
 	w.consumer = consumer

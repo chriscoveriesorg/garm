@@ -93,10 +93,12 @@ func (c *Controller) createScaleSetWorker(scaleSet params.ScaleSet) (*Worker, er
 	if err != nil {
 		return nil, fmt.Errorf("creating scale set worker: %w", err)
 	}
+	worker.capacity = c.capacity
 	return worker, nil
 }
 
 func (c *Controller) handleScaleSetCreateOperation(sSet params.ScaleSet) error {
+	c.capacity.update(sSet)
 	if _, ok := c.ScaleSets.Load(sSet.ID); ok {
 		slog.DebugContext(c.ctx, "scale set already exists in worker list", "scale_set_id", sSet.ID)
 		return nil
@@ -118,6 +120,7 @@ func (c *Controller) handleScaleSetCreateOperation(sSet params.ScaleSet) error {
 }
 
 func (c *Controller) handleScaleSetDeleteOperation(sSet params.ScaleSet) error {
+	c.capacity.remove(sSet.ID)
 	val, ok := c.ScaleSets.Load(sSet.ID)
 	if !ok {
 		slog.DebugContext(c.ctx, "scale set not found in worker list", "scale_set_id", sSet.ID)
@@ -135,6 +138,7 @@ func (c *Controller) handleScaleSetDeleteOperation(sSet params.ScaleSet) error {
 }
 
 func (c *Controller) handleScaleSetUpdateOperation(sSet params.ScaleSet) error {
+	c.capacity.update(sSet)
 	val, ok := c.ScaleSets.Load(sSet.ID)
 	if !ok {
 		// Some error may have occurred when the scale set was first created, so we

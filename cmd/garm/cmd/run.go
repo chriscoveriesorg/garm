@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -200,7 +201,15 @@ func initInfrastructure(ctx context.Context, cfg *config.Config, hub *websocket.
 		return nil, fmt.Errorf("starting provider worker: %w", err)
 	}
 
-	entityCtrl, err := entity.NewController(ctx, db, loadedProviders)
+	preferenceFile := cfg.Default.ScaleSetPreferenceFile
+	if preferenceFile == "" {
+		preferenceFile = filepath.Join(filepath.Dir(cfgFile), "scale-set-preferences.json")
+	}
+	preferences, err := config.ReadScaleSetPreferences(preferenceFile)
+	if err != nil && (cfg.Default.ScaleSetPreferenceFile != "" || !os.IsNotExist(err)) {
+		slog.WarnContext(ctx, "ignoring scale set preferences", "error", err)
+	}
+	entityCtrl, err := entity.NewController(ctx, db, loadedProviders, preferences)
 	if err != nil {
 		return nil, fmt.Errorf("creating entity controller: %w", err)
 	}
